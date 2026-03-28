@@ -20,6 +20,8 @@
 #'   \code{\link{fput_all}} to retrieve all matching labels. Default \code{FALSE}.
 #' @param ignore_case Logical. If \code{TRUE}, key matching for character formats
 #'   is case-insensitive. Default \code{FALSE}.
+#' @param verbose Logical. If \code{TRUE}, returns the format object visibly;
+#'   otherwise returns it invisibly. Default \code{FALSE}.
 #'
 #' @return An object of class \code{"ks_format"} containing the format definition.
 #'   The object is also stored in the format library if \code{name} is given.
@@ -77,7 +79,7 @@
 #' fput_all(c(3, 14, 25, 70), "age_categories")
 #' fclear()
 fnew <- function(..., name = NULL, type = "auto", default = NULL,
-                 multilabel = FALSE, ignore_case = FALSE) {
+                 multilabel = FALSE, ignore_case = FALSE, verbose = FALSE) {
   type <- match.arg(type, c("auto", "character", "numeric"))
   if (!is.null(name)) {
     if (!is.character(name) || length(name) != 1L || is.na(name) || !nzchar(name)) {
@@ -139,8 +141,47 @@ fnew <- function(..., name = NULL, type = "auto", default = NULL,
   # Auto-register in library if named
   .format_register(format_obj)
 
-  format_obj
+  if (verbose) format_obj else invisible(format_obj)
 }
+
+
+#' Mark a Label for Expression Evaluation
+#'
+#' Marks a format label string so it will be evaluated as an R expression
+#' at apply-time (\code{\link{fput}}), even when it does not contain
+#' \code{.x1}, \code{.x2}, etc. placeholders.
+#'
+#' @param expr Character string. The R expression to evaluate.
+#' @return The same character string with an \code{"eval"} attribute set to
+#'   \code{TRUE}.
+#'
+#' @details
+#' This is useful when a label should call a function that does not need
+#' positional \code{.xN} arguments.
+#' The expression is evaluated in the caller's environment of
+#' \code{\link{fput}}, so user-defined functions are accessible.
+#'
+#' Labels containing \code{.x1}, \code{.x2}, etc. are still evaluated
+#' automatically without needing \code{e()}.
+#'
+#' @export
+#' @examples
+#' # Mark an expression for evaluation at apply-time
+#' fmt <- fnew(
+#'   "timestamp" = e("format(Sys.time(), '%Y-%m-%d')"),
+#'   "static"    = "Hello",
+#'   name = "demo_eval"
+#' )
+#' fput(c("timestamp", "static"), fmt)
+#' fclear()
+e <- function(expr) {
+  if (!is.character(expr) || length(expr) != 1L) {
+    cli_abort("{.arg expr} must be a single character string.")
+  }
+  attr(expr, "eval") <- TRUE
+  expr
+}
+
 
 #' Detect Format Type
 #'
@@ -151,8 +192,13 @@ detect_format_type <- function(keys) {
   if (length(keys) == 0L) return("character")
 
   non_empty <- keys[!is.na(keys) & nzchar(keys)]
-  if (length(non_empty) > 0L &&
-      all(!is.na(suppressWarnings(as.numeric(non_empty))))) {
+
+  if (length(non_empty) == 0L) {
+    cli_warn("All mapping keys are empty or NA; defaulting to {.val numeric} type.")
+    return("numeric")
+  }
+
+  if (all(!is.na(suppressWarnings(as.numeric(non_empty))))) {
     return("numeric")
   }
 

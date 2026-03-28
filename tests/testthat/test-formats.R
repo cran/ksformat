@@ -140,6 +140,14 @@ test_that("finputc applies character invalue by name", {
   fclear()
 })
 
+test_that(".find_cheatsheet_path returns a path for known formats", {
+  html_result <- ksformat:::.find_cheatsheet_path("html")
+  expect_type(html_result, "character")
+
+  pdf_result <- ksformat:::.find_cheatsheet_path("pdf")
+  expect_type(pdf_result, "character")
+})
+
 context("Invalue Creation and Application (finput)")
 
 test_that(".invalue_apply reverses formatting", {
@@ -457,6 +465,26 @@ test_that("fparse reads from file", {
 
 test_that("fparse errors with no input", {
   expect_error(fparse(), "Either .text. or .file. must be provided")
+})
+
+test_that("fparse handles hyphenated format names", {
+  fclear()
+  txt <- '
+VALUE 014-001
+  "M" = "Male",
+  "F" = "Female",
+  .missing = "No sex";
+'
+  result <- fparse(text = txt)
+  expect_length(result, 1)
+  expect_s3_class(result[["014-001"]], "ks_format")
+  expect_equal(result[["014-001"]]$mappings[["M"]], "Male")
+
+  # Verify auto-registration
+  out <- fput(c("M", "F", ""), "014-001")
+  expect_equal(out, c("Male", "Female", "No sex"))
+
+  fclear()
 })
 
 test_that("fparse errors with both inputs", {
@@ -1612,6 +1640,169 @@ VALUE stat (character)
 
 
 # ===========================================================================
+# Explicit (eval) / e() Expression Label Tests
+# ===========================================================================
+
+test_that("e() sets eval attribute on a string", {
+  label <- e("get_dttm('ru')")
+  expect_equal(as.character(label), "get_dttm('ru')")
+  expect_true(isTRUE(attr(label, "eval")))
+  fclear()
+})
+
+test_that("e() errors on non-string input", {
+  expect_error(e(42))
+  expect_error(e(c("a", "b")))
+  fclear()
+})
+
+test_that(".has_eval_attr detects eval attribute", {
+  expect_true(ksformat:::.has_eval_attr(e("test")))
+  expect_false(ksformat:::.has_eval_attr("test"))
+  fclear()
+})
+
+test_that("fnew with e() wrapper creates eval-marked labels", {
+  fmt <- fnew(
+    "ts" = e("format(Sys.time(), '%Y')"),
+    "static" = "Hello"
+  )
+  expect_true(isTRUE(attr(fmt$mappings[["ts"]], "eval")))
+  expect_null(attr(fmt$mappings[["static"]], "eval"))
+  fclear()
+})
+
+test_that("fput evaluates e() label calling user-defined function", {
+  my_greet <- function(lang) {
+    if (lang == "ru") "Привет" else "Hello"
+  }
+  fmt <- fnew(
+    "ru" = e("my_greet('ru')"),
+    "en" = e("my_greet('en')")
+  )
+  result <- fput(c("ru", "en"), fmt)
+  expect_equal(result, c("\u041f\u0440\u0438\u0432\u0435\u0442", "Hello"))
+  fclear()
+})
+
+test_that("fput with mixed e() and .xN labels", {
+  fmt <- fnew(
+    "ts" = e("format(Sys.time(), '%Y')"),
+    "n"  = "sprintf('%s', .x1)"
+  )
+  result <- fput(c("ts", "n"), fmt, c(0, 42))
+  expect_equal(result[1], format(Sys.time(), "%Y"))
+  expect_equal(result[2], "42")
+  fclear()
+})
+
+test_that("fput with e() label and .xN args combined", {
+  fmt <- fnew(
+    "val" = e("sprintf('%s items', .x1)")
+  )
+  result <- fput("val", fmt, 5)
+  expect_equal(result, "5 items")
+  fclear()
+})
+
+test_that("fparse with (eval) marker creates eval-marked labels", {
+  result <- fparse(text = '
+VALUE d_footer
+  "left_ru" = "paste(\"A\", \"B\")" (eval)
+  "left_en" = "Hello"
+;
+')
+  expect_true(isTRUE(attr(result$d_footer$mappings[["left_ru"]], "eval")))
+  expect_null(attr(result$d_footer$mappings[["left_en"]], "eval"))
+  fclear()
+})
+
+test_that("fparse (eval) label is evaluated by fput", {
+  my_suffix <- function() "!!!"
+  fparse(text = '
+VALUE eval_test
+  "k" = "my_suffix()" (eval)
+;
+')
+  result <- fput("k", "eval_test")
+  expect_equal(result, "!!!")
+  fclear()
+})
+
+test_that("fparse (eval) with .missing and .other", {
+  result <- fparse(text = '
+VALUE eval_mo
+  "a" = "Static"
+  .missing = "paste(\"M\", \"V\")" (eval)
+  .other = "paste(\"O\", \"V\")" (eval)
+;
+')
+  fmt <- result$eval_mo
+  expect_true(isTRUE(attr(fmt$missing_label, "eval")))
+  expect_true(isTRUE(attr(fmt$other_label, "eval")))
+
+  res <- fput(c("a", NA, "zzz"), fmt)
+  expect_equal(res[1], "Static")
+  expect_equal(res[2], "M V")
+  expect_equal(res[3], "O V")
+  fclear()
+})
+
+test_that("fexport roundtrip preserves (eval) flag", {
+  fmt <- fnew(
+    "ts" = e("format(Sys.time(), '%Y')"),
+    "static" = "Hello",
+    name = "rt_test"
+  )
+  txt <- fexport(rt_test = fmt)
+  expect_match(txt, '(eval)', fixed = TRUE)
+
+  fclear()
+  reparsed <- fparse(text = txt)
+  expect_true(isTRUE(attr(reparsed$rt_test$mappings[["ts"]], "eval")))
+  expect_null(attr(reparsed$rt_test$mappings[["static"]], "eval"))
+  fclear()
+})
+
+test_that("fexport roundtrip preserves (eval) on .missing/.other", {
+  fmt <- fnew(
+    "a" = "Static",
+    .missing = e("paste('miss')"),
+    .other = e("paste('other')"),
+    name = "rt_mo"
+  )
+  txt <- fexport(rt_mo = fmt)
+  expect_match(txt, '.missing = "paste(\'miss\')" (eval)', fixed = TRUE)
+  expect_match(txt, '.other = "paste(\'other\')" (eval)', fixed = TRUE)
+
+  fclear()
+  reparsed <- fparse(text = txt)
+  expect_true(isTRUE(attr(reparsed$rt_mo$missing_label, "eval")))
+  expect_true(isTRUE(attr(reparsed$rt_mo$other_label, "eval")))
+  fclear()
+})
+
+test_that("fput_all with e() eval labels", {
+  my_tag <- function() "TAG"
+  fmt <- fnew(
+    "a" = e("my_tag()"),
+    "b" = "Static"
+  )
+  result <- fput_all(c("a", "b"), fmt)
+  expect_equal(result[[1]], "TAG")
+  expect_equal(result[[2]], "Static")
+  fclear()
+})
+
+test_that("existing .xN expressions still work without (eval)", {
+  fmt <- fnew("n" = "sprintf('%s', .x1)")
+  result <- fput("n", fmt, 42)
+  expect_equal(result, "42")
+  fclear()
+})
+
+
+# ===========================================================================
 # Edge Case Tests
 # ===========================================================================
 
@@ -2158,5 +2349,139 @@ test_that(".format_get resolves SAS datetime format on the fly", {
   # SAS format name not registered, but should auto-create via fallback
   result <- fput(as.Date("2024-01-15"), "DATE9.")
   expect_true(nchar(result) > 0)
+  fclear()
+})
+
+# ============================================================
+# Code review fixes — regression tests
+# ============================================================
+
+test_that("fput expression: scalar x with scalar extra arg", {
+  fparse(text = '
+  VALUE stat (character)
+    "mean" = "sprintf(\"%.2f\", .x1)"
+  ;
+  ')
+  result <- fput("mean", "stat", 1.23456)
+  expect_equal(result, "1.23")
+  fclear()
+})
+
+test_that("fput expression: scalar x with vector extra arg", {
+  fparse(text = '
+  VALUE stat (character)
+    "mean" = "sprintf(\"%.2f\", .x1)"
+  ;
+  ')
+  result <- fput("mean", "stat", c(1.23456, 2.34567, 3.45678))
+  expect_equal(result, c("1.23", "2.35", "3.46"))
+  fclear()
+})
+
+test_that("fput expression: matching-length x and extra arg", {
+  fparse(text = '
+  VALUE stat (character)
+    "mean" = "sprintf(\"%.2f\", .x1)"
+  ;
+  ')
+  result <- fput(c("mean", "mean", "mean"), "stat", c(1.23456, 2.34567, 3.45678))
+  expect_equal(result, c("1.23", "2.35", "3.46"))
+  fclear()
+})
+
+test_that("fput vector recycling: length mismatch errors", {
+  fparse(text = '
+  VALUE stat
+    "mean" = "sprintf(\"%.2f\", .x1)"
+  ;
+  ')
+  # x has length 2, extra arg has length 3 → error
+
+  expect_error(
+    fput(c("mean", "mean"), "stat", c(1.23, 2.34, 3.45)),
+    "Length mismatch"
+  )
+  # Multiple extra args with different non-scalar lengths → error
+  expect_error(
+    fput("mean", "stat", c(1, 2), c(3, 4, 5)),
+    "Length mismatch in extra arguments"
+  )
+  fclear()
+})
+
+test_that(".eval_expr_label handles unparseable expression gracefully", {
+  # Labels with .xN trigger expression evaluation
+  fmt <- fnew("x" = "this is not valid R {{{{ .x1", name = "bad_expr")
+  expect_warning(
+    result <- fput("x", fmt, 1),
+    "parse failed"
+  )
+  expect_equal(result, NA_character_)
+  fclear()
+})
+
+test_that(".eval_expr_label handles NULL/empty expression result", {
+  # NULL expression via .xN pattern to trigger eval
+  fmt <- fnew("x" = "{ .x1; NULL }", name = "null_expr")
+  expect_warning(
+    result <- fput("x", fmt, 1),
+    "empty result"
+  )
+  expect_equal(result, NA_character_)
+  fclear()
+})
+
+test_that(".invalue_apply preserves explicitly-mapped NA values", {
+  inv <- finput("Known" = 1, "Unknown" = NA, name = "na_test_inv")
+  result <- ksformat:::.invalue_apply(c("Known", "Unknown"), inv)
+  expect_equal(result, c(1, NA_real_))
+  fclear()
+})
+
+test_that("fnew_bid warns on duplicate values (ambiguous reverse)", {
+  expect_warning(
+    fnew_bid("M" = "Adult", "F" = "Adult", name = "dup_val"),
+    "Multiple keys map to the same value"
+  )
+  fclear()
+})
+
+test_that("finputn warns on non-numeric target_type", {
+  finput("Male" = "M", "Female" = "F",
+         name = "char_inv", target_type = "character")
+  expect_warning(
+    finputn(c("Male", "Female"), "char_inv"),
+    "not numeric"
+  )
+  fclear()
+})
+
+test_that(".format_get errors on ambiguous case-insensitive matches", {
+  fnew("M" = "Male", name = "Sex")
+  fnew("1" = "One", name = "sex")
+  expect_error(
+    fput("M", "SEX"),
+    "Ambiguous"
+  )
+  fclear()
+})
+
+test_that("in_range returns FALSE for NA input", {
+  rs <- range_spec(0, 10, "test")
+  expect_false(in_range(NA, rs))
+})
+
+test_that("finput rejects non-scalar mapping values", {
+  expect_error(
+    finput("A" = c(1, 2), name = "bad_inv"),
+    "must be scalar"
+  )
+})
+
+test_that("fimport reads SAS CNTLOUT CSV", {
+  csv_file <- system.file("testdata", "test_cntlout.csv", package = "ksformat")
+  skip_if(!nzchar(csv_file), "test_cntlout.csv not found")
+  imported <- fimport(csv_file)
+  expect_true(length(imported) > 0)
   fclear()
 })

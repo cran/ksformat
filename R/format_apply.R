@@ -84,7 +84,32 @@ fput <- function(x, format, ..., keep_na = FALSE) {
   }
 
   extra_args <- list(...)
+
+  # Recycle x when extra args are longer (vectorized .xN support)
+  if (length(extra_args) > 0L) {
+    arg_lens <- vapply(extra_args, length, integer(1L))
+    non_scalar <- arg_lens[arg_lens > 1L]
+    if (length(non_scalar) > 0L) {
+      target_len <- non_scalar[1L]
+      # All non-scalar extra args must have the same length
+      if (!all(non_scalar == target_len)) {
+        cli_abort(
+          "Length mismatch in extra arguments: lengths {paste(arg_lens, collapse = ', ')}. All non-scalar arguments must have the same length."
+        )
+      }
+      nx <- length(x)
+      if (nx == 1L) {
+        x <- rep(x, target_len)
+      } else if (nx != target_len) {
+        cli_abort(
+          "Length mismatch: {.arg x} has length {nx} but extra arguments have length {target_len}. They must be equal (or {.arg x} must be scalar)."
+        )
+      }
+    }
+  }
+
   nocase <- isTRUE(format$ignore_case)
+  caller_env <- parent.frame()
 
   n <- length(x)
   result <- rep(NA_character_, n)
@@ -94,7 +119,17 @@ fput <- function(x, format, ..., keep_na = FALSE) {
 
   # Apply missing label
   if (!is.null(format$missing_label) && !keep_na) {
-    result[is_miss] <- format$missing_label
+    miss_label <- format$missing_label
+    if (.has_eval_attr(miss_label) || .is_expr_label(miss_label)) {
+      miss_idx <- which(is_miss)
+      if (length(miss_idx) > 0L) {
+        result[miss_idx] <- .eval_expr_label(
+          miss_label, extra_args, miss_idx, parent_env = caller_env
+        )
+      }
+    } else {
+      result[is_miss] <- miss_label
+    }
   }
 
   non_miss <- which(!is_miss)
@@ -102,7 +137,9 @@ fput <- function(x, format, ..., keep_na = FALSE) {
 
   map_keys <- names(format$mappings)
   map_labels <- unlist(format$mappings, use.names = FALSE)
-  is_expr_label <- grepl("\\.x\\d+", map_labels)
+  is_xn_expr <- grepl("\\.x\\d+", map_labels)
+  map_eval <- vapply(format$mappings, .has_eval_attr, logical(1L))
+  is_expr_label <- is_xn_expr | map_eval
 
   val_str <- as.character(x[non_miss])
   pos <- if (nocase) {
@@ -170,7 +207,8 @@ fput <- function(x, format, ..., keep_na = FALSE) {
 
           if (any(in_rng)) {
             target <- unmatched_nm[idx[in_rng]]
-            if (.is_expr_label(re$label)) {
+            re_is_eval <- .is_expr_label(re$label) || .has_eval_attr(re$label)
+            if (re_is_eval) {
               expr_map[[re$label]] <- c(expr_map[[re$label]], target)
             } else {
               result[target] <- re$label
@@ -186,7 +224,9 @@ fput <- function(x, format, ..., keep_na = FALSE) {
   unmatched_final <- non_miss[!matched[non_miss]]
   if (length(unmatched_final) > 0L) {
     if (!is.null(format$other_label)) {
-      if (.is_expr_label(format$other_label)) {
+      other_is_eval <- .is_expr_label(format$other_label) ||
+                       .has_eval_attr(format$other_label)
+      if (other_is_eval) {
         expr_map[[format$other_label]] <- c(
           expr_map[[format$other_label]], unmatched_final
         )
@@ -202,7 +242,9 @@ fput <- function(x, format, ..., keep_na = FALSE) {
   if (length(expr_map) > 0L) {
     for (expr_str in names(expr_map)) {
       indices <- expr_map[[expr_str]]
-      result[indices] <- .eval_expr_label(expr_str, extra_args, indices)
+      result[indices] <- .eval_expr_label(
+        expr_str, extra_args, indices, parent_env = caller_env
+      )
     }
   }
 
@@ -432,18 +474,28 @@ fput_all <- function(x, format, ..., keep_na = FALSE) {
 
   extra_args <- list(...)
   nocase <- isTRUE(format$ignore_case)
+  caller_env <- parent.frame()
 
   n <- length(x)
   result <- vector("list", n)
   is_miss <- is_missing(x)
 
   miss_idx <- which(is_miss)
-  miss_val <- if (!keep_na && !is.null(format$missing_label)) {
-    format$missing_label
+  if (!keep_na && !is.null(format$missing_label)) {
+    miss_label <- format$missing_label
+    if (.has_eval_attr(miss_label) || .is_expr_label(miss_label)) {
+      if (length(miss_idx) > 0L) {
+        evaled <- .eval_expr_label(
+          miss_label, extra_args, miss_idx, parent_env = caller_env
+        )
+        result[miss_idx] <- as.list(evaled)
+      }
+    } else {
+      result[miss_idx] <- list(miss_label)
+    }
   } else {
-    NA_character_
+    result[miss_idx] <- list(NA_character_)
   }
-  result[miss_idx] <- list(miss_val)
 
   non_miss <- which(!is_miss)
   if (length(non_miss) == 0L) return(result)
@@ -452,6 +504,7 @@ fput_all <- function(x, format, ..., keep_na = FALSE) {
 
   map_keys <- names(format$mappings)
   map_labels <- unlist(format$mappings, use.names = FALSE)
+  map_eval <- vapply(format$mappings, .has_eval_attr, logical(1L))
   val_str <- as.character(x[non_miss])
   lookup_vals <- if (nocase) tolower(val_str) else val_str
 
@@ -483,12 +536,12 @@ fput_all <- function(x, format, ..., keep_na = FALSE) {
     if (length(matched_pos) > 0L) {
       label <- map_labels[i]
       has_any_match[matched_pos] <- TRUE
-      if (.is_expr_label(label)) {
+      label_is_eval <- .is_expr_label(label) || map_eval[i]
+      if (label_is_eval) {
         expr_map[[label]] <- c(expr_map[[label]], non_miss[matched_pos])
       } else {
-        for (p in matched_pos) {
-          result[[non_miss[p]]] <- c(result[[non_miss[p]]], label)
-        }
+        target <- non_miss[matched_pos]
+        result[target] <- Map(c, result[target], list(label))
       }
     }
   }
@@ -505,12 +558,12 @@ fput_all <- function(x, format, ..., keep_na = FALSE) {
 
       if (any(in_rng)) {
         has_any_match[in_rng] <- TRUE
-        if (.is_expr_label(re$label)) {
+        re_is_eval <- .is_expr_label(re$label) || .has_eval_attr(re$label)
+        if (re_is_eval) {
           expr_map[[re$label]] <- c(expr_map[[re$label]], non_miss[which(in_rng)])
         } else {
-          for (p in which(in_rng)) {
-            result[[non_miss[p]]] <- c(result[[non_miss[p]]], re$label)
-          }
+          target <- non_miss[which(in_rng)]
+          result[target] <- Map(c, result[target], list(re$label))
         }
       }
     }
@@ -520,10 +573,10 @@ fput_all <- function(x, format, ..., keep_na = FALSE) {
   if (length(expr_map) > 0L) {
     for (expr_str in names(expr_map)) {
       indices <- expr_map[[expr_str]]
-      evaled <- .eval_expr_label(expr_str, extra_args, indices)
-      for (k in seq_along(indices)) {
-        result[[indices[k]]] <- c(result[[indices[k]]], evaled[k])
-      }
+      evaled <- .eval_expr_label(
+        expr_str, extra_args, indices, parent_env = caller_env
+      )
+      result[indices] <- Map(c, result[indices], as.list(evaled))
     }
   }
 
@@ -536,8 +589,12 @@ fput_all <- function(x, format, ..., keep_na = FALSE) {
   }
   for (idx in no_match) {
     if (!is.null(format$other_label)) {
-      if (.is_expr_label(format$other_label)) {
-        evaled <- .eval_expr_label(format$other_label, extra_args, idx)
+      other_is_eval <- .is_expr_label(format$other_label) ||
+                       .has_eval_attr(format$other_label)
+      if (other_is_eval) {
+        evaled <- .eval_expr_label(
+          format$other_label, extra_args, idx, parent_env = caller_env
+        )
         result[[idx]] <- c(result[[idx]], evaled)
       } else {
         result[[idx]] <- c(result[[idx]], format$other_label)

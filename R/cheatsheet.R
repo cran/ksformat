@@ -1,3 +1,21 @@
+#' @noRd
+.find_cheatsheet_path <- function(format) {
+  basenames <- switch(
+    format,
+    html = "ksformat-cheatsheet.html",
+    pdf = c("ksformat-cheatsheet.pdf", "ksformat-Cheat-Sheet.pdf")
+  )
+
+  for (basename in basenames) {
+    path <- system.file("doc", basename, package = "ksformat")
+    if (nzchar(path)) {
+      return(path)
+    }
+  }
+
+  ""
+}
+
 #' Open the ksformat cheat sheet
 #'
 #' Opens the package cheat sheet in the default browser (HTML) or viewer (PDF).
@@ -13,15 +31,13 @@
 #' }
 ksformat_cheatsheet <- function(format = c("html", "pdf")) {
   format <- match.arg(format)
-  basename <- if (format == "html") "ksformat-cheatsheet.html" else "ksformat-Cheat-Sheet.pdf"
-  path <- system.file("doc", basename, package = "ksformat")
+  path <- .find_cheatsheet_path(format)
   if (!nzchar(path)) {
-    cli::cli_abort("Cheat sheet not found: {basename}. Reinstall the package.")
+    cli::cli_abort(c(
+      "Cheat sheet not found for format {.val {format}}.",
+      "i" = "Try reinstalling the package."
+    ))
   }
-  if (format == "html") {
-    utils::browseURL(path)
-  } else {
-    utils::browseURL(path)
-  }
+  utils::browseURL(path)
   invisible(path)
 }

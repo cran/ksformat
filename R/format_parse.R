@@ -8,6 +8,9 @@
 #'   If a character vector, lines are concatenated with newlines.
 #' @param file Path to a text file containing format definitions.
 #'   Exactly one of \code{text} or \code{file} must be provided.
+#' @param verbose Logical. If \code{TRUE}, the parsed formats are
+#'   printed to the console.  Default is \code{FALSE} to suppress output
+#'   (the result is returned invisibly).
 #'
 #' @return A named list of \code{ks_format} and/or \code{ks_invalue} objects.
 #'   Names correspond to the format names defined in the text.
@@ -112,7 +115,7 @@
 #' ')
 #' fput_all(c(2, 5, 9), "risk")
 #' fclear()
-fparse <- function(text = NULL, file = NULL) {
+fparse <- function(text = NULL, file = NULL, verbose = FALSE) {
   if (is.null(text) && is.null(file)) {
     cli_abort("Either {.arg text} or {.arg file} must be provided.")
   }
@@ -155,7 +158,7 @@ fparse <- function(text = NULL, file = NULL) {
     result[[block$name]] <- obj
   }
 
-  result
+  if (verbose) result else invisible(result)
 }
 
 
@@ -676,8 +679,8 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
 
     # Check for block start: VALUE or INVALUE
     block_match <- regmatches(line, regexec(
-      "^(VALUE|INVALUE)\\s+(\\w+)\\s*(?:\\(([^)]+)\\))?\\s*$",
-      line, ignore.case = TRUE
+      "^(VALUE|INVALUE)\\s+([\\w.-]+)\\s*(?:\\(([^)]+)\\))?\\s*$",
+      line, ignore.case = TRUE, perl = TRUE
     ))[[1]]
 
     if (length(block_match) >= 3) {
@@ -740,8 +743,18 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
       next
     }
 
-    # Check for block end
-    if (grepl("^;", line)) {
+    # Warn if line looks like a block header but didn't match
+    if (!in_block && grepl("^(VALUE|INVALUE)\\b", line, ignore.case = TRUE)) {
+      cli_warn(c(
+        "Line {i}: Looks like a block header but could not be parsed: {.val {line}}",
+        "i" = "Check the format name or syntax."
+      ))
+      next
+    }
+
+    # Check for block end (standalone ; or trailing ;)
+    ends_with_semi <- grepl(";\\s*$", line)
+    if (grepl("^;\\s*$", line)) {
       if (in_block && !is.null(current_block)) {
         blocks <- c(blocks, list(current_block))
         current_block <- NULL
@@ -750,11 +763,25 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
       next
     }
 
+    # Warn about lines outside any block
+    if (!in_block) {
+      cli_warn("Line {i}: Ignoring line outside of any block: {.val {line}}")
+      next
+    }
+
     # Parse mapping line within a block
-    if (in_block && !is.null(current_block)) {
-      entry <- .parse_mapping_line(line, i)
+    if (!is.null(current_block)) {
+      # Strip trailing comma and/or semicolon from mapping lines
+      mapping_line <- sub("[,;]+\\s*$", "", line)
+      entry <- .parse_mapping_line(mapping_line, i)
       if (!is.null(entry)) {
         current_block$entries <- c(current_block$entries, list(entry))
+      }
+      # Close block if line ended with ;
+      if (ends_with_semi) {
+        blocks <- c(blocks, list(current_block))
+        current_block <- NULL
+        in_block <- FALSE
       }
     }
   }
@@ -789,8 +816,19 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
   lhs <- trimws(substring(line, 1, eq_pos - 1))
   rhs <- trimws(substring(line, eq_pos + 1))
 
+  # Check for (eval) marker before unquoting
+  has_eval <- grepl("\\(eval\\)\\s*$", rhs)
+  if (has_eval) {
+    rhs <- trimws(sub("\\s*\\(eval\\)\\s*$", "", rhs))
+  }
+
   # Unquote rhs
   rhs <- .unquote(rhs)
+
+  # Set eval attribute if (eval) marker was found
+  if (has_eval) {
+    attr(rhs, "eval") <- TRUE
+  }
 
   # Check for .missing / .other directives
   if (lhs == ".missing") {
@@ -802,7 +840,7 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
 
   # Check for interval notation: [low, high) or (low, high] etc.
   interval_match <- regmatches(lhs, regexec(
-    "^(\\[|\\()\\s*(-?[0-9.]+|LOW|HIGH|Inf|-Inf)\\s*,\\s*(-?[0-9.]+|LOW|HIGH|Inf|-Inf)\\s*(\\]|\\))$",
+    "^(\\[|\\()\\s*(-?[0-9]+(?:\\.[0-9]+)?|LOW|HIGH|Inf|-Inf)\\s*,\\s*(-?[0-9]+(?:\\.[0-9]+)?|LOW|HIGH|Inf|-Inf)\\s*(\\]|\\))$",
     lhs, ignore.case = TRUE
   ))[[1]]
 
@@ -826,7 +864,7 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
 
   # Check for legacy range: low - high pattern (no brackets)
   range_match <- regmatches(lhs, regexec(
-    "^(-?[0-9.]+|LOW|HIGH|Inf|-Inf)\\s*-\\s*(-?[0-9.]+|LOW|HIGH|Inf|-Inf)$",
+    "^(-?[0-9]+(?:\\.[0-9]+)?|LOW|HIGH|Inf|-Inf)\\s*-\\s*(-?[0-9]+(?:\\.[0-9]+)?|LOW|HIGH|Inf|-Inf)$",
     lhs, ignore.case = TRUE
   ))[[1]]
 
@@ -1053,6 +1091,7 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
   for (i in seq_along(fmt$mappings)) {
     key <- names(fmt$mappings)[i]
     label <- fmt$mappings[[i]]
+    eval_suffix <- if (.has_eval_attr(label)) " (eval)" else ""
     parsed <- .parse_range_key(key)
     if (!is.null(parsed)) {
       left_bracket <- if (parsed$inc_low) "[" else "("
@@ -1060,18 +1099,20 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
       low <- .format_range_bound(parsed$low, is_low = TRUE)
       high <- .format_range_bound(parsed$high, is_low = FALSE)
       parts[[idx]] <- paste0("  ", left_bracket, low, ", ", high,
-                             right_bracket, " = \"", label, "\"")
+                             right_bracket, " = \"", label, "\"", eval_suffix)
     } else {
-      parts[[idx]] <- paste0("  \"", key, "\" = \"", label, "\"")
+      parts[[idx]] <- paste0("  \"", key, "\" = \"", label, "\"", eval_suffix)
     }
     idx <- idx + 1L
   }
 
   if (!is.null(fmt$missing_label)) {
-    parts[[idx]] <- paste0("  .missing = \"", fmt$missing_label, "\""); idx <- idx + 1L
+    miss_eval <- if (.has_eval_attr(fmt$missing_label)) " (eval)" else ""
+    parts[[idx]] <- paste0("  .missing = \"", fmt$missing_label, "\"", miss_eval); idx <- idx + 1L
   }
   if (!is.null(fmt$other_label)) {
-    parts[[idx]] <- paste0("  .other = \"", fmt$other_label, "\""); idx <- idx + 1L
+    other_eval <- if (.has_eval_attr(fmt$other_label)) " (eval)" else ""
+    parts[[idx]] <- paste0("  .other = \"", fmt$other_label, "\"", other_eval); idx <- idx + 1L
   }
   parts[[idx]] <- ";"
   paste(unlist(parts[seq_len(idx)]), collapse = "\n")
@@ -1117,7 +1158,8 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
   for (i in seq_along(inv$mappings)) {
     key <- names(inv$mappings)[i]
     value <- inv$mappings[[i]]
-    parts[[idx]] <- paste0("  \"", key, "\" = \"", value, "\""); idx <- idx + 1L
+    eval_suffix <- if (.has_eval_attr(value)) " (eval)" else ""
+    parts[[idx]] <- paste0("  \"", key, "\" = \"", value, "\"", eval_suffix); idx <- idx + 1L
   }
 
   if (!is.null(inv$missing_value) && !identical(inv$missing_value, NA)) {
