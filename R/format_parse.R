@@ -52,6 +52,17 @@
 #'   \item Lines starting with \code{/*}, \code{*}, \code{//}, or \code{#} are comments
 #' }
 #'
+#' \strong{Block options:}
+#'
+#' Comma-separated options can be placed inside the parentheses after the type:
+#' \itemize{
+#'   \item \code{nocase} — enables case-insensitive key matching (equivalent to
+#'         \code{ignore_case = TRUE} in \code{\link{fnew}}).
+#'   \item \code{multilabel} — allows overlapping ranges where a single value
+#'         matches multiple labels (used with \code{\link{fput_all}}).
+#' }
+#' Options can be combined: \code{VALUE name (character, nocase, multilabel)}.
+#'
 #' @export
 #' @examples
 #' # Parse multiple format definitions from text
@@ -80,6 +91,7 @@
 #' fput(c("M", "F", NA), "sex")
 #' fputn(c(5, 25, 70, NA), "age")
 #' finputn(c("White", "Black"), "race_inv")
+#' flist()
 #' fprint()
 #' fclear()
 #'
@@ -102,6 +114,18 @@
 #' fput(as.Date("2025-03-01"), "enrldt")
 #' fput(36000, "visit_time")
 #' fput(as.POSIXct("2025-03-01 10:00:00", tz = "UTC"), "stamp")
+#' fclear()
+#'
+#' # Case-insensitive format (nocase option)
+#' fparse(text = '
+#' VALUE yesno (character, nocase)
+#'   "Y" = "Yes"
+#'   "N" = "No"
+#'   .other = "Unknown"
+#' ;
+#' ')
+#' fput(c("y", "N", "YES"), "yesno")
+#' # [1] "Yes" "No" "Unknown"
 #' fclear()
 #'
 #' # Parse multilabel format
@@ -313,6 +337,7 @@ fexport <- function(..., formats = NULL, file = NULL) {
 #'
 #' csv_file <- system.file("extdata", "test_cntlout.csv", package = "ksformat")
 #' imported <- fimport(csv_file)
+#' flist()
 #' fprint()
 #' fclear()
 fimport <- function(file, register = TRUE, overwrite = TRUE) {
@@ -547,6 +572,7 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
       other_label  = other_label,
       multilabel   = multilabel,
       ignore_case  = FALSE,
+      range_table  = .build_range_table(mappings, type),
       created      = Sys.time()
     ),
     class = "ks_format"
@@ -730,12 +756,62 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
         }
       }
 
+      # Parse format: spec from subtype (e.g. "format: %Y-%m-%d")
+      block_date_format <- NULL
+      fmt_match <- regmatches(block_subtype, regexec(
+        "format:\\s*([^,)]+)", block_subtype, ignore.case = TRUE
+      ))[[1]]
+      if (length(fmt_match) >= 2 && fmt_match[1] != "") {
+        block_date_format <- trimws(fmt_match[2])
+        block_subtype <- gsub(",?\\s*format:\\s*[^,)]+", "", block_subtype,
+                              ignore.case = TRUE)
+        block_subtype <- gsub("format:\\s*[^,)]+\\s*,?", "", block_subtype,
+                              ignore.case = TRUE)
+        block_subtype <- trimws(block_subtype)
+        if (block_subtype == "") {
+          block_subtype <- if (block_type == "INVALUE") "numeric" else "auto"
+        }
+      }
+
+      # Parse range_subtype: option for stratified_range
+      block_range_subtype <- NULL
+      rs_match <- regmatches(block_subtype, regexec(
+        "range_subtype:\\s*([A-Za-z]+)", block_subtype, ignore.case = TRUE
+      ))[[1]]
+      if (length(rs_match) >= 2 && rs_match[1] != "") {
+        block_range_subtype <- tolower(trimws(rs_match[2]))
+        block_subtype <- gsub(",?\\s*range_subtype:\\s*[A-Za-z]+", "",
+                              block_subtype, ignore.case = TRUE)
+        block_subtype <- gsub("range_subtype:\\s*[A-Za-z]+\\s*,?", "",
+                              block_subtype, ignore.case = TRUE)
+        block_subtype <- trimws(block_subtype)
+        if (block_subtype == "") block_subtype <- "auto"
+      }
+
+      # Parse strata_sep: option for stratified_range
+      block_strata_sep <- NULL
+      ss_match <- regmatches(block_subtype, regexec(
+        "strata_sep:\\s*([^,)\\s]+)", block_subtype, ignore.case = TRUE
+      ))[[1]]
+      if (length(ss_match) >= 2 && ss_match[1] != "") {
+        block_strata_sep <- trimws(ss_match[2])
+        block_subtype <- gsub(",?\\s*strata_sep:\\s*[^,)\\s]+", "",
+                              block_subtype, ignore.case = TRUE)
+        block_subtype <- gsub("strata_sep:\\s*[^,)\\s]+\\s*,?", "",
+                              block_subtype, ignore.case = TRUE)
+        block_subtype <- trimws(block_subtype)
+        if (block_subtype == "") block_subtype <- "auto"
+      }
+
       current_block <- list(
         type = block_type,
         name = block_name,
         subtype = block_subtype,
         multilabel = block_multilabel,
         nocase = block_nocase,
+        date_format = block_date_format,
+        range_subtype = block_range_subtype,
+        strata_sep = block_strata_sep,
         entries = list(),
         line_start = i
       )
@@ -822,8 +898,13 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
     rhs <- trimws(sub("\\s*\\(eval\\)\\s*$", "", rhs))
   }
 
-  # Unquote rhs
-  rhs <- .unquote(rhs)
+  # Handle unquoted NA/NaN literals before unquoting (e.g. .other = NA)
+  is_quoted <- grepl("^([\"']).*\\1$", rhs)
+  if (!is_quoted && rhs %in% c("NA", "NaN")) {
+    rhs <- NA_character_
+  } else {
+    rhs <- .unquote(rhs)
+  }
 
   # Set eval attribute if (eval) marker was found
   if (has_eval) {
@@ -860,6 +941,30 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
       return(list(type = "range", low = low_val, high = high_val,
                   inc_low = inc_low, inc_high = inc_high, label = rhs))
     }
+  }
+
+  # Check for date / datetime interval notation: [YYYY-MM-DD, YYYY-MM-DD)
+  # or [YYYY-MM-DD HH:MM[:SS], ...]. Bounds are kept as strings so the
+  # range_table builder can dispatch to .parse_date_range_key() /
+  # .parse_datetime_range_key() using the format's date_format.
+  date_bound <- "(\\d{4}-\\d{2}-\\d{2}(?:[ T]\\d{2}:\\d{2}(?::\\d{2})?)?|LOW|HIGH)"
+  date_iv_re <- paste0("^(\\[|\\()\\s*", date_bound, "\\s*,\\s*",
+                       date_bound, "\\s*(\\]|\\))$")
+  date_iv_match <- regmatches(lhs, regexec(date_iv_re, lhs,
+                                           ignore.case = TRUE))[[1]]
+
+  if (length(date_iv_match) == 5) {
+    left_bracket  <- date_iv_match[2]
+    low_str       <- trimws(date_iv_match[3])
+    high_str      <- trimws(date_iv_match[4])
+    right_bracket <- date_iv_match[5]
+
+    inc_low  <- (left_bracket == "[")
+    inc_high <- (right_bracket == "]")
+
+    return(list(type = "range", low = low_str, high = high_str,
+                inc_low = inc_low, inc_high = inc_high, label = rhs,
+                bound_kind = "date"))
   }
 
   # Check for legacy range: low - high pattern (no brackets)
@@ -928,9 +1033,19 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
 #' Convert VALUE block to ks_format
 #' @keywords internal
 .block_to_ks_format <- function(block) {
-  # Handle date/time/datetime blocks
+  # Value types (case-sensitive: "Date", "POSIXct", "logical")
+  if (block$subtype %in% .value_types) {
+    return(.block_to_value_type_format(block))
+  }
+
+  # Handle date/time/datetime blocks (case-insensitive)
   if (tolower(block$subtype) %in% c("date", "time", "datetime")) {
     return(.block_to_ks_datetime_format(block))
+  }
+
+  # Stratified range blocks: build mappings then delegate to fnew()
+  if (identical(tolower(block$subtype), "stratified_range")) {
+    return(.block_to_stratified_range_format(block))
   }
 
   mappings <- list()
@@ -965,6 +1080,7 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
       other_label = other_label,
       multilabel = isTRUE(block$multilabel),
       ignore_case = isTRUE(block$nocase),
+      date_format = block$date_format,
       created = Sys.time()
     ),
     class = "ks_format"
@@ -973,14 +1089,205 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
   # Auto-detect type if needed
   if (type == "auto") {
     has_ranges <- any(vapply(block$entries, function(e) identical(e$type, "range"), logical(1L)))
-    if (has_ranges) {
+    has_date_bounds <- any(vapply(block$entries, function(e) {
+      identical(e$type, "range") && identical(e$bound_kind, "date")
+    }, logical(1L)))
+    if (has_date_bounds) {
+      # Choose date_range vs datetime_range based on whether any bound
+      # carries a time component.
+      has_time <- any(vapply(block$entries, function(e) {
+        identical(e$type, "range") && identical(e$bound_kind, "date") &&
+          (grepl("[ T]\\d{2}:\\d{2}", as.character(e$low)) ||
+           grepl("[ T]\\d{2}:\\d{2}", as.character(e$high)))
+      }, logical(1L)))
+      format_obj$type <- if (has_time) "datetime_range" else "date_range"
+    } else if (has_ranges) {
       format_obj$type <- "numeric"
     } else {
       format_obj$type <- detect_format_type(names(mappings))
     }
   }
 
+  format_obj$range_table <- .build_range_table(mappings, format_obj$type,
+                                               format_obj$date_format)
+
   return(format_obj)
+}
+
+
+#' Convert VALUE block with stratified_range type to ks_format
+#'
+#' Stratified blocks support both canonical keys
+#' (\code{"STRATUM<sep>low,high,inc_low,inc_high"}) supplied as quoted
+#' discrete LHS, and the friendly interval form
+#' (\code{STRATUM <sep> [low, high)}). Per-stratum directives appear as
+#' \code{"STRATUM<sep>.missing" = "..."} or, with the \code{.missing|S}
+#' shorthand, as plain discrete entries that are recognised here.
+#' @keywords internal
+#' @noRd
+.block_to_stratified_range_format <- function(block) {
+  strata_sep <- if (!is.null(block$strata_sep)) block$strata_sep else "|"
+  range_subtype <- if (!is.null(block$range_subtype)) block$range_subtype else "numeric"
+  date_format <- block$date_format
+
+  # Escape strata_sep for regex use (special chars: . | ( ) [ ] { } * + ? ^ $ \)
+  sep_re <- gsub("([\\.|()\\[\\]{}*+?^$\\\\])", "\\\\\\1", strata_sep,
+                 perl = TRUE)
+
+  num_token <- "(?:-?[0-9]+(?:\\.[0-9]+)?|LOW|HIGH|Inf|-Inf)"
+  date_token <- "(?:\\d{4}-\\d{2}-\\d{2}(?:[ T]\\d{2}:\\d{2}(?::\\d{2})?)?|LOW|HIGH)"
+
+  mappings <- list()
+  missing_label <- NULL
+  other_label <- NULL
+
+  canonicalise <- function(key) {
+    if (startsWith(key, paste0(".missing", strata_sep))) {
+      return(list(kind = "missing_stratum",
+                  stratum = substr(key,
+                                   nchar(".missing") + nchar(strata_sep) + 1L,
+                                   nchar(key))))
+    }
+    if (startsWith(key, paste0(".other", strata_sep))) {
+      return(list(kind = "other_stratum",
+                  stratum = substr(key,
+                                   nchar(".other") + nchar(strata_sep) + 1L,
+                                   nchar(key))))
+    }
+    # Already canonical?
+    split_try <- .split_stratified_key(key, strata_sep, range_subtype,
+                                        date_format)
+    if (!is.null(split_try)) {
+      return(list(kind = "canonical", key = key))
+    }
+    # Friendly interval: stratum<sep>[low,high)
+    tok <- if (range_subtype == "numeric") num_token else date_token
+    pat <- paste0("^(.+?)", sep_re, "\\s*(\\[|\\()\\s*(",
+                  tok, ")\\s*,\\s*(", tok, ")\\s*(\\]|\\))\\s*$")
+    m <- regmatches(key, regexec(pat, key, perl = TRUE))[[1]]
+    if (length(m) == 6L) {
+      stratum <- .unquote(trimws(m[2]))
+      inc_low <- (m[3] == "[")
+      low_str <- m[4]
+      high_str <- m[5]
+      inc_high <- (m[6] == "]")
+      norm_bound <- function(s) {
+        su <- toupper(s)
+        if (range_subtype == "numeric") {
+          if (su %in% c("LOW", "-INF")) return("-Inf")
+          if (su %in% c("HIGH", "INF")) return("Inf")
+          return(s)
+        }
+        # date / datetime
+        if (su %in% c("LOW", "-INF")) return("LOW")
+        if (su %in% c("HIGH", "INF")) return("HIGH")
+        s
+      }
+      low_norm <- norm_bound(low_str)
+      high_norm <- norm_bound(high_str)
+      canon <- paste(low_norm, high_norm, toupper(inc_low),
+                     toupper(inc_high), sep = ",")
+      return(list(kind = "canonical",
+                  key = paste0(stratum, strata_sep, canon)))
+    }
+    NULL
+  }
+
+  for (entry in block$entries) {
+    if (entry$type == "missing") {
+      missing_label <- entry$value
+      next
+    }
+    if (entry$type == "other") {
+      other_label <- entry$value
+      next
+    }
+    if (entry$type == "range") {
+      cli_warn(c(
+        "Bare range entry in stratified_range block has no stratum; ignoring.",
+        "i" = "Use {.val STRATUM{strata_sep}[low, high)} syntax."
+      ))
+      next
+    }
+    if (entry$type != "discrete") next
+
+    info <- canonicalise(entry$key)
+    if (is.null(info)) {
+      cli_warn(c(
+        "Could not parse stratified entry {.val {entry$key}}; treating as discrete.",
+        "i" = "Expected {.val STRATUM{strata_sep}RANGE} key."
+      ))
+      mappings[[entry$key]] <- entry$label
+      next
+    }
+    if (info$kind == "canonical") {
+      mappings[[info$key]] <- entry$label
+    } else if (info$kind == "missing_stratum") {
+      mappings[[paste0(".missing", strata_sep, info$stratum)]] <- entry$label
+    } else if (info$kind == "other_stratum") {
+      mappings[[paste0(".other", strata_sep, info$stratum)]] <- entry$label
+    }
+  }
+
+  # Assemble extras for fnew()
+  extras <- list()
+  if (!is.null(missing_label)) extras[[".missing"]] <- missing_label
+  if (!is.null(other_label)) extras[[".other"]] <- other_label
+
+  do.call(fnew, c(
+    mappings, extras,
+    list(
+      name = block$name,
+      type = "stratified_range",
+      range_subtype = range_subtype,
+      strata_sep = strata_sep,
+      date_format = date_format,
+      multilabel = isTRUE(block$multilabel),
+      ignore_case = isTRUE(block$nocase)
+    )
+  ))
+}
+
+
+#' Convert VALUE block with a value type (Date/POSIXct/logical) to ks_format
+#' @keywords internal
+#' @noRd
+.block_to_value_type_format <- function(block) {
+  vtype <- block$subtype
+  date_format <- block$date_format
+
+  mappings <- list()
+
+  for (entry in block$entries) {
+    if (entry$type == "missing" || entry$type == "other") {
+      # Silently ignore — value type formats always use typed NA
+    } else if (entry$type == "discrete") {
+      mappings[[entry$key]] <- .parse_typed_value(entry$label, vtype, date_format)
+    } else if (entry$type == "range") {
+      inc_low <- if (!is.null(entry$inc_low)) entry$inc_low else TRUE
+      inc_high <- if (!is.null(entry$inc_high)) entry$inc_high else FALSE
+      range_key <- paste0(entry$low, ",", entry$high, ",",
+                          toupper(inc_low), ",", toupper(inc_high))
+      mappings[[range_key]] <- .parse_typed_value(entry$label, vtype, date_format)
+    }
+  }
+
+  format_obj <- structure(
+    list(
+      name = block$name,
+      type = vtype,
+      mappings = mappings,
+      missing_label = NULL,
+      other_label = NULL,
+      multilabel = FALSE,
+      ignore_case = isTRUE(block$nocase),
+      date_format = date_format,
+      created = Sys.time()
+    ),
+    class = "ks_format"
+  )
+
+  format_obj
 }
 
 
@@ -1073,6 +1380,9 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
   if (fmt$type %in% c("date", "time", "datetime")) {
     return(.datetime_format_to_text(fmt, name))
   }
+  if (.is_stratified_type(fmt$type)) {
+    return(.stratified_format_to_text(fmt, name))
+  }
 
   parts <- vector("list", length(fmt$mappings) + 4L)
   idx <- 1L
@@ -1080,7 +1390,8 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
   type_str <- if (!is.null(fmt$type) && fmt$type != "auto") fmt$type else NULL
   ml_str <- if (isTRUE(fmt$multilabel)) "multilabel" else NULL
   nc_str <- if (isTRUE(fmt$ignore_case)) "nocase" else NULL
-  annot_parts <- c(type_str, ml_str, nc_str)
+  df_str <- if (!is.null(fmt$date_format)) paste0("format: ", fmt$date_format) else NULL
+  annot_parts <- c(type_str, ml_str, nc_str, df_str)
   type_part <- if (length(annot_parts) > 0L) {
     paste0(" (", paste(annot_parts, collapse = ", "), ")")
   } else {
@@ -1088,20 +1399,49 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
   }
   parts[[idx]] <- paste0("VALUE ", name, type_part); idx <- idx + 1L
 
+  is_vtype <- .is_value_type(fmt$type)
+  is_date_rng <- .is_date_range_type(fmt$type)
+
   for (i in seq_along(fmt$mappings)) {
     key <- names(fmt$mappings)[i]
     label <- fmt$mappings[[i]]
-    eval_suffix <- if (.has_eval_attr(label)) " (eval)" else ""
-    parsed <- .parse_range_key(key)
+
+    # Convert native values to strings for text output
+    label_str <- if (is_vtype) {
+      .typed_value_to_string(label, fmt$type, fmt$date_format)
+    } else {
+      as.character(label)
+    }
+
+    eval_suffix <- if (!is_vtype && .has_eval_attr(label)) " (eval)" else ""
+
+    # Try to display range keys in interval notation
+    parsed <- if (is_vtype && fmt$type %in% c("Date", "POSIXct")) {
+      .parse_date_range_key(key, fmt$date_format)
+    } else if (fmt$type == "date_range") {
+      .parse_date_range_key(key, fmt$date_format)
+    } else if (fmt$type == "datetime_range") {
+      .parse_datetime_range_key(key, fmt$date_format)
+    } else {
+      .parse_range_key(key)
+    }
     if (!is.null(parsed)) {
       left_bracket <- if (parsed$inc_low) "[" else "("
       right_bracket <- if (parsed$inc_high) "]" else ")"
-      low <- .format_range_bound(parsed$low, is_low = TRUE)
-      high <- .format_range_bound(parsed$high, is_low = FALSE)
+      low <- if (is_vtype || is_date_rng) {
+        .format_date_bound(parsed$low, fmt$date_format, fmt$type, is_low = TRUE)
+      } else {
+        .format_range_bound(parsed$low, is_low = TRUE)
+      }
+      high <- if (is_vtype || is_date_rng) {
+        .format_date_bound(parsed$high, fmt$date_format, fmt$type, is_low = FALSE)
+      } else {
+        .format_range_bound(parsed$high, is_low = FALSE)
+      }
       parts[[idx]] <- paste0("  ", left_bracket, low, ", ", high,
-                             right_bracket, " = \"", label, "\"", eval_suffix)
+                             right_bracket, " = \"", label_str, "\"", eval_suffix)
     } else {
-      parts[[idx]] <- paste0("  \"", key, "\" = \"", label, "\"", eval_suffix)
+      parts[[idx]] <- paste0("  \"", key, "\" = \"", label_str, "\"", eval_suffix)
     }
     idx <- idx + 1L
   }
@@ -1142,6 +1482,95 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
 }
 
 
+#' Convert stratified_range ks_format to SAS-like text
+#' @keywords internal
+#' @noRd
+.stratified_format_to_text <- function(fmt, name) {
+  strata_sep <- if (!is.null(fmt$strata_sep)) fmt$strata_sep else "|"
+  range_subtype <- if (!is.null(fmt$range_subtype)) fmt$range_subtype else "numeric"
+
+  header_opts <- c("stratified_range",
+                   paste0("range_subtype: ", range_subtype),
+                   paste0("strata_sep: ", strata_sep))
+  if (isTRUE(fmt$multilabel)) header_opts <- c(header_opts, "multilabel")
+  if (isTRUE(fmt$ignore_case)) header_opts <- c(header_opts, "nocase")
+  if (!is.null(fmt$date_format)) {
+    header_opts <- c(header_opts, paste0("format: ", fmt$date_format))
+  }
+  header <- paste0("VALUE ", name, " (", paste(header_opts, collapse = ", "), ")")
+
+  # Group mappings by stratum, first-seen order
+  strata_order <- character(0)
+  grouped <- list()
+  parser <- switch(range_subtype,
+    numeric  = function(k) .parse_range_key(k),
+    date     = function(k) .parse_date_range_key(k, fmt$date_format),
+    datetime = function(k) .parse_datetime_range_key(k, fmt$date_format)
+  )
+  for (i in seq_along(fmt$mappings)) {
+    key <- names(fmt$mappings)[i]
+    sp <- .split_stratified_key(key, strata_sep, range_subtype,
+                                fmt$date_format)
+    s <- if (is.null(sp)) "" else sp$stratum
+    rk <- if (is.null(sp)) key else sp$range_key
+    if (!s %in% strata_order) {
+      strata_order <- c(strata_order, s)
+      grouped[[s]] <- list()
+    }
+    grouped[[s]][[length(grouped[[s]]) + 1L]] <- list(
+      range_key = rk, label = fmt$mappings[[i]]
+    )
+  }
+
+  is_date_rng <- range_subtype %in% c("date", "datetime")
+  inner_type <- .stratified_subtype_to_range_type(range_subtype)
+  out <- character(0)
+  out <- c(out, header)
+  for (s in strata_order) {
+    for (entry in grouped[[s]]) {
+      parsed <- parser(entry$range_key)
+      label_str <- as.character(entry$label)
+      eval_suffix <- if (.has_eval_attr(entry$label)) " (eval)" else ""
+      if (!is.null(parsed)) {
+        lb <- if (parsed$inc_low) "[" else "("
+        rb <- if (parsed$inc_high) "]" else ")"
+        low <- if (is_date_rng) {
+          .format_date_bound(parsed$low, fmt$date_format, inner_type, is_low = TRUE)
+        } else {
+          .format_range_bound(parsed$low, is_low = TRUE)
+        }
+        high <- if (is_date_rng) {
+          .format_date_bound(parsed$high, fmt$date_format, inner_type, is_low = FALSE)
+        } else {
+          .format_range_bound(parsed$high, is_low = FALSE)
+        }
+        out <- c(out, paste0("  \"", s, "\"", strata_sep, lb, low, ", ",
+                             high, rb, " = \"", label_str, "\"", eval_suffix))
+      } else {
+        out <- c(out, paste0("  \"", s, strata_sep, entry$range_key,
+                             "\" = \"", label_str, "\"", eval_suffix))
+      }
+    }
+    if (!is.null(fmt$missing_by_stratum) && s %in% names(fmt$missing_by_stratum)) {
+      out <- c(out, paste0("  \".missing", strata_sep, s, "\" = \"",
+                           fmt$missing_by_stratum[[s]], "\""))
+    }
+    if (!is.null(fmt$other_by_stratum) && s %in% names(fmt$other_by_stratum)) {
+      out <- c(out, paste0("  \".other", strata_sep, s, "\" = \"",
+                           fmt$other_by_stratum[[s]], "\""))
+    }
+  }
+  if (!is.null(fmt$missing_label)) {
+    out <- c(out, paste0("  .missing = \"", fmt$missing_label, "\""))
+  }
+  if (!is.null(fmt$other_label)) {
+    out <- c(out, paste0("  .other = \"", fmt$other_label, "\""))
+  }
+  out <- c(out, ";")
+  paste(out, collapse = "\n")
+}
+
+
 #' Convert ks_invalue to SAS-like text
 #' @keywords internal
 .invalue_to_text <- function(inv, name) {
@@ -1178,4 +1607,20 @@ fimport <- function(file, register = TRUE, overwrite = TRUE) {
     return("HIGH")
   }
   return(as.character(val))
+}
+
+#' Format a Date / POSIXct range bound for text output
+#'
+#' Renders infinite bounds as \code{LOW}/\code{HIGH}; otherwise formats the
+#' Date/POSIXct value using \code{date_format} when supplied, else ISO 8601.
+#' Used for value-type (Date/POSIXct) formats and the date_range /
+#' datetime_range types.
+#' @keywords internal
+.format_date_bound <- function(val, date_format = NULL, type = NULL,
+                               is_low = TRUE) {
+  num <- as.numeric(val)
+  if (is.na(num)) return("")
+  if (is.infinite(num)) return(if (num < 0) "LOW" else "HIGH")
+  if (!is.null(date_format)) return(format(val, date_format))
+  as.character(val)
 }

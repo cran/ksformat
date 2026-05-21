@@ -1,7 +1,7 @@
 Package: ksformat
 Type: Package
 Title: 'SAS'-Style 'PROC FORMAT' for R
-Version: 0.4.2
+Version: 0.7.1
 Author: Vladimir Larchenko [aut, cre],
   Igor Aleschenkov [aut]
 Maintainer: Vladimir Larchenko <vladimir.larchenko@keystatsolutions.com>
@@ -27,11 +27,12 @@ URL: https://github.com/crow16384/ksformat
 BugReports: https://github.com/crow16384/ksformat/issues
 License: GPL-3
 Encoding: UTF-8
-RoxygenNote: 7.3.3
+Depends: R (>= 4.1.0)
 Imports: cli
-Suggests: knitr, rmarkdown, testthat (>= 3.0.0)
+Suggests: knitr, rmarkdown, shiny, testthat (>= 3.0.0)
 VignetteBuilder: knitr
+Config/roxygen2/version: 8.0.0
 NeedsCompilation: no
-Packaged: 2026-03-28 10:58:44 UTC; meguty
+Packaged: 2026-05-21 07:59:17 UTC; meguty
 Repository: CRAN
-Date/Publication: 2026-03-28 15:50:02 UTC
+Date/Publication: 2026-05-21 08:10:02 UTC

@@ -11,21 +11,53 @@ fnew(
   default = NULL,
   multilabel = FALSE,
   ignore_case = FALSE,
+  date_format = NULL,
+  range_subtype = c("numeric", "date", "datetime"),
+  strata_sep = "|",
   verbose = FALSE
 )
 }
 \arguments{
-\item{...}{Named arguments defining value-label mappings. Can be:
-\itemize{
-  \item Discrete values: \code{"M" = "Male", "F" = "Female"}
-  \item Special values: \code{.missing = "Missing"}, \code{.other = "Other"}
-}}
+\item{...}{Named arguments defining value-label mappings, or one or more
+  named vectors/lists using the R convention \code{c(Label = "Code")}.
+  Can be:
+  \itemize{
+    \item Discrete values: \code{"M" = "Male", "F" = "Female"}
+    \item Named vector: \code{c(Male = "M", Female = "F")}
+    \item Named list: \code{list(Male = "M", Female = "F")}
+    \item \code{\link{fmap}} vector: \code{fmap(keys, values)} for
+      data-driven formats (no reversal)
+    \item Special values: \code{.missing = "Missing"}, \code{.other = "Other"}
+  }
+  Named vectors use the R idiom where names are labels and values are codes,
+  which is the reverse of the \code{...} argument convention.
+
+  \strong{Named-vector reversal:} For character and numeric formats, named
+  vectors are automatically reversed so that \code{c(Male = "M")} becomes
+  the mapping \code{"M" -> "Male"} (following the \code{factor()} convention).
+  For value types (\code{"Date"}, \code{"POSIXct"}, \code{"logical"}), no
+  reversal occurs — the named vector is used as-is with names as input keys
+  and values as output objects, because non-character objects cannot serve
+  as vector names.
+
+  \strong{Data-driven formats:} For formats built programmatically from
+  data, wrap your data in \code{\link{fmap}(keys, values)} to suppress
+  automatic reversal for all types. See
+  \code{vignette("usage_examples")} Example 21 for a detailed walkthrough.}
 
 \item{name}{Character. Optional name for the format. If provided, the format
 is automatically registered in the global format library.}
 
 \item{type}{Character. Type of format: \code{"character"}, \code{"numeric"},
-or \code{"auto"} (default) for auto-detection.}
+\code{"Date"}, \code{"POSIXct"}, \code{"logical"},
+\code{"date_range"}, \code{"datetime_range"},
+or \code{"auto"} (default) for auto-detection.
+Value types (\code{"Date"}, \code{"POSIXct"}, \code{"logical"}) store
+native R objects instead of character labels. For value types,
+\code{.missing} and \code{.other} are always typed NA.
+Range-bucketing types (\code{"date_range"}, \code{"datetime_range"})
+bucket \code{Date}/\code{POSIXct} input into character labels using
+ISO date/datetime strings as range bounds.}
 
 \item{default}{Character. Default label for unmatched values (overrides .other)}
 
@@ -35,6 +67,20 @@ ranges where a single value can match multiple labels. Used with
 
 \item{ignore_case}{Logical. If \code{TRUE}, key matching for character formats
 is case-insensitive. Default \code{FALSE}.}
+
+\item{date_format}{Character. Optional strptime-style format string used
+when parsing date/datetime range keys (e.g. \code{"\%d/\%m/\%Y"}). When
+\code{NULL}, ISO 8601 parsing is used. Applies to \code{"date_range"},
+\code{"datetime_range"}, and the value types \code{"Date"} /
+\code{"POSIXct"} when keys are ranges.}
+
+\item{range_subtype}{Character. For \code{type = "stratified_range"} only.
+One of \code{"numeric"} (default), \code{"date"}, or \code{"datetime"}.
+Determines how the range part of each stratified key is parsed and compared.}
+
+\item{strata_sep}{Character. For \code{type = "stratified_range"} only.
+Single-character (or multi-character) separator between the stratum
+identifier and the range key in each mapping key. Default \code{"|"}.}
 
 \item{verbose}{Logical. If \code{TRUE}, returns the format object visibly;
 otherwise returns it invisibly. Default \code{FALSE}.}
@@ -55,6 +101,35 @@ Special directives:
   \item \code{.missing}: Label for NA, NULL, NaN values
   \item \code{.other}: Label for values not matching any rule
 }
+
+\strong{Named-vector direction (reverse convention):}
+
+When a named vector or list is passed as an unnamed argument (e.g.,
+\code{fnew(c(Male = "M"))}), the direction of the name-to-value mapping
+depends on the output \code{type}:
+
+\itemize{
+  \item For \strong{character / numeric} types, names are \emph{labels} and
+    values are \emph{codes}. The pairs are reversed internally so that the
+    format maps \code{code -> label}. This follows the standard R idiom used
+    by \code{factor()}, where \code{c(Label = "Code")}.
+  \item For \strong{value types} (\code{Date}, \code{POSIXct},
+    \code{logical}), names are \emph{input keys} and values are the native R
+    objects returned by the format. No reversal is applied, because
+    non-character objects cannot be used as vector names.
+}
+
+This means the \emph{same data} may need to be arranged differently
+depending on the target type. To avoid this inconsistency for data-driven
+formats, use \code{\link{fmap}(keys, values)} which works identically
+for all types:
+\preformatted{
+fnew(fmap(ids, dates), type = "Date")
+fnew(fmap(ids, date_strings), type = "character")
+}
+
+When in doubt, use explicit \code{key = "label"} arguments — these are
+never reversed regardless of type.
 
 \strong{Expression labels:} If a label contains \code{.x1}, \code{.x2}, etc.,
 it is treated as an R expression that is evaluated at apply-time. Extra arguments
@@ -98,5 +173,12 @@ fnew(
 # fput returns first match; fput_all returns all matches
 fput(c(3, 14, 25, 70), "age_categories")
 fput_all(c(3, 14, 25, 70), "age_categories")
+fclear()
+
+# From a named vector (Label = Code convention)
+sex_vec <- fnew(c(Male = "M", Female = "F"), .missing = "Unknown",
+               name = "sex_vec")
+fput(c("M", "F", NA), sex_vec)
+# [1] "Male" "Female" "Unknown"
 fclear()
 }

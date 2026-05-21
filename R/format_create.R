@@ -5,21 +5,61 @@
 #' The format is automatically stored in the global format library if \code{name}
 #' is provided.
 #'
-#' @param ... Named arguments defining value-label mappings. Can be:
+#' @param ... Named arguments defining value-label mappings, or one or more
+#'   named vectors/lists using the R convention \code{c(Label = "Code")}.
+#'   Can be:
 #'   \itemize{
 #'     \item Discrete values: \code{"M" = "Male", "F" = "Female"}
+#'     \item Named vector: \code{c(Male = "M", Female = "F")}
+#'     \item Named list: \code{list(Male = "M", Female = "F")}
+#'     \item \code{\link{fmap}} vector: \code{fmap(keys, values)} for
+#'       data-driven formats (no reversal)
 #'     \item Special values: \code{.missing = "Missing"}, \code{.other = "Other"}
 #'   }
+#'   Named vectors use the R idiom where names are labels and values are codes,
+#'   which is the reverse of the \code{...} argument convention.
+#'
+#'   \strong{Named-vector reversal:} For character and numeric formats, named
+#'   vectors are automatically reversed so that \code{c(Male = "M")} becomes
+#'   the mapping \code{"M" -> "Male"} (following the \code{factor()} convention).
+#'   For value types (\code{"Date"}, \code{"POSIXct"}, \code{"logical"}), no
+#'   reversal occurs — the named vector is used as-is with names as input keys
+#'   and values as output objects, because non-character objects cannot serve
+#'   as vector names.
+#'
+#'   \strong{Data-driven formats:} For formats built programmatically from
+#'   data, wrap your data in \code{\link{fmap}(keys, values)} to suppress
+#'   automatic reversal for all types. See
+#'   \code{vignette("usage_examples")} Example 21 for a detailed walkthrough.
 #' @param name Character. Optional name for the format. If provided, the format
 #'   is automatically registered in the global format library.
 #' @param type Character. Type of format: \code{"character"}, \code{"numeric"},
+#'   \code{"Date"}, \code{"POSIXct"}, \code{"logical"},
+#'   \code{"date_range"}, \code{"datetime_range"},
 #'   or \code{"auto"} (default) for auto-detection.
+#'   Value types (\code{"Date"}, \code{"POSIXct"}, \code{"logical"}) store
+#'   native R objects instead of character labels. For value types,
+#'   \code{.missing} and \code{.other} are always typed NA.
+#'   Range-bucketing types (\code{"date_range"}, \code{"datetime_range"})
+#'   bucket \code{Date}/\code{POSIXct} input into character labels using
+#'   ISO date/datetime strings as range bounds.
 #' @param default Character. Default label for unmatched values (overrides .other)
 #' @param multilabel Logical. If \code{TRUE}, the format supports overlapping
 #'   ranges where a single value can match multiple labels. Used with
 #'   \code{\link{fput_all}} to retrieve all matching labels. Default \code{FALSE}.
 #' @param ignore_case Logical. If \code{TRUE}, key matching for character formats
 #'   is case-insensitive. Default \code{FALSE}.
+#' @param date_format Character. Optional strptime-style format string used
+#'   when parsing date/datetime range keys (e.g. \code{"\%d/\%m/\%Y"}). When
+#'   \code{NULL}, ISO 8601 parsing is used. Applies to \code{"date_range"},
+#'   \code{"datetime_range"}, and the value types \code{"Date"} /
+#'   \code{"POSIXct"} when keys are ranges.
+#' @param range_subtype Character. For \code{type = "stratified_range"} only.
+#'   One of \code{"numeric"} (default), \code{"date"}, or \code{"datetime"}.
+#'   Determines how the range part of each stratified key is parsed and compared.
+#' @param strata_sep Character. For \code{type = "stratified_range"} only.
+#'   Single-character (or multi-character) separator between the stratum
+#'   identifier and the range key in each mapping key. Default \code{"|"}.
 #' @param verbose Logical. If \code{TRUE}, returns the format object visibly;
 #'   otherwise returns it invisibly. Default \code{FALSE}.
 #'
@@ -32,6 +72,35 @@
 #'   \item \code{.missing}: Label for NA, NULL, NaN values
 #'   \item \code{.other}: Label for values not matching any rule
 #' }
+#'
+#' \strong{Named-vector direction (reverse convention):}
+#'
+#' When a named vector or list is passed as an unnamed argument (e.g.,
+#' \code{fnew(c(Male = "M"))}), the direction of the name-to-value mapping
+#' depends on the output \code{type}:
+#'
+#' \itemize{
+#'   \item For \strong{character / numeric} types, names are \emph{labels} and
+#'     values are \emph{codes}. The pairs are reversed internally so that the
+#'     format maps \code{code -> label}. This follows the standard R idiom used
+#'     by \code{factor()}, where \code{c(Label = "Code")}.
+#'   \item For \strong{value types} (\code{Date}, \code{POSIXct},
+#'     \code{logical}), names are \emph{input keys} and values are the native R
+#'     objects returned by the format. No reversal is applied, because
+#'     non-character objects cannot be used as vector names.
+#' }
+#'
+#' This means the \emph{same data} may need to be arranged differently
+#' depending on the target type. To avoid this inconsistency for data-driven
+#' formats, use \code{\link{fmap}(keys, values)} which works identically
+#' for all types:
+#' \preformatted{
+#' fnew(fmap(ids, dates), type = "Date")
+#' fnew(fmap(ids, date_strings), type = "character")
+#' }
+#'
+#' When in doubt, use explicit \code{key = "label"} arguments — these are
+#' never reversed regardless of type.
 #'
 #' \strong{Expression labels:} If a label contains \code{.x1}, \code{.x2}, etc.,
 #' it is treated as an R expression that is evaluated at apply-time. Extra arguments
@@ -78,9 +147,30 @@
 #' fput(c(3, 14, 25, 70), "age_categories")
 #' fput_all(c(3, 14, 25, 70), "age_categories")
 #' fclear()
+#'
+#' # From a named vector (Label = Code convention)
+#' sex_vec <- fnew(c(Male = "M", Female = "F"), .missing = "Unknown",
+#'                name = "sex_vec")
+#' fput(c("M", "F", NA), sex_vec)
+#' # [1] "Male" "Female" "Unknown"
+#' fclear()
 fnew <- function(..., name = NULL, type = "auto", default = NULL,
-                 multilabel = FALSE, ignore_case = FALSE, verbose = FALSE) {
-  type <- match.arg(type, c("auto", "character", "numeric"))
+                 multilabel = FALSE, ignore_case = FALSE,
+                 date_format = NULL,
+                 range_subtype = c("numeric", "date", "datetime"),
+                 strata_sep = "|",
+                 verbose = FALSE) {
+  type <- match.arg(type, c("auto", "character", "numeric", .value_types,
+                            "date_range", "datetime_range",
+                            "stratified_range"))
+  range_subtype <- match.arg(range_subtype)
+  is_vtype <- .is_value_type(type)
+  is_strat <- .is_stratified_type(type)
+  if (!is.character(strata_sep) || length(strata_sep) != 1L ||
+      is.na(strata_sep) || !nzchar(strata_sep)) {
+    cli_abort("{.arg strata_sep} must be a single non-empty character string.")
+  }
+
   if (!is.null(name)) {
     if (!is.character(name) || length(name) != 1L || is.na(name) || !nzchar(name)) {
       cli_abort("{.arg name} must be a single non-empty character string.")
@@ -98,6 +188,49 @@ fnew <- function(..., name = NULL, type = "auto", default = NULL,
 
   mappings <- list(...)
 
+  # Detect if any unnamed argument uses ks_fmap (suppresses reversal)
+  has_fmap <- FALSE
+  arg_names <- names(mappings)
+  for (i in seq_along(mappings)) {
+    nm <- if (!is.null(arg_names)) arg_names[i] else ""
+    if ((is.na(nm) || !nzchar(nm)) && inherits(mappings[[i]], "ks_fmap")) {
+      has_fmap <- TRUE
+      # Inherit strata_sep from fmap_strata() when caller did not
+      # explicitly override it.
+      fmap_sep <- attr(mappings[[i]], "strata_sep")
+      if (!is.null(fmap_sep) && missing(strata_sep)) {
+        strata_sep <- fmap_sep
+      }
+      # Strip ks_fmap class before expansion
+      cls <- class(mappings[[i]])
+      class(mappings[[i]]) <- cls[cls != "ks_fmap"]
+    }
+  }
+
+  # Pre-expansion value type auto-detection (must happen before reverse)
+  if (type == "auto") {
+    arg_names <- names(mappings)
+    arg_classes <- character(0)
+    for (i in seq_along(mappings)) {
+      nm <- if (!is.null(arg_names)) arg_names[i] else ""
+      if (nm %in% c(".missing", ".other")) next
+      arg_classes <- c(arg_classes, class(mappings[[i]])[1L])
+    }
+    if (length(arg_classes) > 0L) {
+      unique_cls <- unique(arg_classes)
+      if (length(unique_cls) == 1L && unique_cls %in% .value_types) {
+        type <- unique_cls
+        is_vtype <- TRUE
+      }
+    }
+  }
+
+  # Determine reversal: auto (reverse for char/numeric, not for value types)
+  # fmap() vectors suppress reversal for all types. Stratified ranges always
+  # use keys-as-LHS semantics (never reverse).
+  do_reverse <- if (has_fmap || is_strat) FALSE else !is_vtype
+  mappings <- .expand_named_vectors(mappings, reverse = do_reverse)
+
   if (length(mappings) == 0L) {
     cli_abort("At least one value-label mapping must be provided.")
   }
@@ -110,14 +243,81 @@ fnew <- function(..., name = NULL, type = "auto", default = NULL,
   mappings[[".missing"]] <- NULL
   mappings[[".other"]] <- NULL
 
+  # For value types, .missing and .other must be NA (can't mix types)
+  if (is_vtype) {
+    if (!is.null(missing_label) && !is.na(missing_label)) {
+      cli_warn("{.arg .missing} is ignored for {.val {type}} formats (always NA).")
+    }
+    missing_label <- NULL
+    if (!is.null(other_label) && !is.na(other_label)) {
+      cli_warn("{.arg .other} is ignored for {.val {type}} formats (always NA).")
+    }
+    other_label <- NULL
+  }
+
   # Override .other with default if provided
-  if (!is.null(default)) {
+  if (!is.null(default) && !is_vtype) {
     other_label <- default
   }
 
-  # Determine format type
+  # Determine format type (auto-detect for character/numeric when not value type)
   if (identical(type, "auto")) {
     type <- detect_format_type(names(mappings))
+  }
+
+  # Per-stratum directives for stratified_range: pick up keys named like
+  # ".missing<sep>STRATUM" / ".other<sep>STRATUM" and split them off the
+  # main mappings list.
+  missing_by_stratum <- NULL
+  other_by_stratum <- NULL
+  if (is_strat) {
+    keys <- names(mappings)
+    miss_prefix <- paste0(".missing", strata_sep)
+    other_prefix <- paste0(".other", strata_sep)
+    miss_hit <- startsWith(keys, miss_prefix)
+    other_hit <- startsWith(keys, other_prefix)
+    if (any(miss_hit)) {
+      strata <- substr(keys[miss_hit],
+                       nchar(miss_prefix) + 1L, nchar(keys[miss_hit]))
+      vals <- vapply(mappings[miss_hit], as.character, character(1L))
+      missing_by_stratum <- stats::setNames(as.list(vals), strata)
+    }
+    if (any(other_hit)) {
+      strata <- substr(keys[other_hit],
+                       nchar(other_prefix) + 1L, nchar(keys[other_hit]))
+      vals <- vapply(mappings[other_hit], as.character, character(1L))
+      other_by_stratum <- stats::setNames(as.list(vals), strata)
+    }
+    mappings <- mappings[!(miss_hit | other_hit)]
+  }
+
+  # Build range_table(s)
+  range_table <- NULL
+  range_tables <- NULL
+  if (is_strat) {
+    range_tables <- .build_stratified_range_tables(
+      mappings, range_subtype, strata_sep, date_format
+    )
+    # Detect malformed keys: anything that didn't end up in any stratum.
+    accounted <- sum(vapply(range_tables, function(rt) {
+      length(rt$range_idx) + length(rt$discrete_idx)
+    }, integer(1L)))
+    if (length(mappings) > 0L && accounted < length(mappings)) {
+      bad <- character(0)
+      for (k in names(mappings)) {
+        sp <- .split_stratified_key(k, strata_sep, range_subtype, date_format)
+        if (is.null(sp)) bad <- c(bad, k)
+      }
+      if (length(bad) > 0L) {
+        cli_abort(c(
+          "Stratified mapping keys could not be parsed as STRATUM{strata_sep}RANGE.",
+          "x" = "Bad key: {.val {bad[1]}}",
+          "i" = "Expected e.g. {.val ARM_A{strata_sep}0,7,TRUE,FALSE} for range_subtype = {.val {range_subtype}}."
+        ))
+      }
+    }
+  } else {
+    range_table <- .build_range_table(mappings, type, date_format)
   }
 
   # Create format object
@@ -125,11 +325,18 @@ fnew <- function(..., name = NULL, type = "auto", default = NULL,
     list(
       name = name,
       type = type,
+      range_subtype = if (is_strat) range_subtype else NULL,
+      strata_sep = if (is_strat) strata_sep else NULL,
       mappings = mappings,
       missing_label = missing_label,
       other_label = other_label,
+      missing_by_stratum = missing_by_stratum,
+      other_by_stratum = other_by_stratum,
       multilabel = multilabel,
       ignore_case = ignore_case,
+      date_format = date_format,
+      range_table = range_table,
+      range_tables = range_tables,
       created = Sys.time()
     ),
     class = "ks_format"
@@ -236,24 +443,98 @@ print.ks_format <- function(x, ...) {
       pattern_str <- paste0(pattern_str, " (", x$sas_name, ".)")
     }
     cat("Pattern:", pattern_str, "\n")
+  } else if (.is_stratified_type(x$type)) {
+    cat("Range subtype:", x$range_subtype, "\n")
+    cat("Strata separator:", x$strata_sep, "\n")
+    cat("Mappings:\n")
+    sep <- x$strata_sep
+    rs <- x$range_subtype
+    .render_bound <- function(b, kind) {
+      bn <- suppressWarnings(as.numeric(b))
+      if (is.na(bn)) return(as.character(b))
+      if (kind == "low" && is.infinite(bn) && bn < 0) return("LOW")
+      if (kind == "high" && is.infinite(bn) && bn > 0) return("HIGH")
+      as.character(b)
+    }
+    parser <- switch(rs,
+      numeric  = function(k) .parse_range_key(k),
+      date     = function(k) .parse_date_range_key(k, x$date_format),
+      datetime = function(k) .parse_datetime_range_key(k, x$date_format)
+    )
+    # Group mappings by stratum, preserving first-seen order
+    strata_seen <- character(0)
+    groups <- list()
+    for (i in seq_along(x$mappings)) {
+      key <- names(x$mappings)[i]
+      sp <- .split_stratified_key(key, sep, rs, x$date_format)
+      s <- if (is.null(sp)) "(unparsed)" else sp$stratum
+      rk <- if (is.null(sp)) key else sp$range_key
+      if (!s %in% strata_seen) {
+        strata_seen <- c(strata_seen, s)
+        groups[[s]] <- list()
+      }
+      groups[[s]][[length(groups[[s]]) + 1L]] <- list(
+        range_key = rk, value = as.character(x$mappings[[i]])
+      )
+    }
+    for (s in strata_seen) {
+      cat("  Stratum \"", s, "\":\n", sep = "")
+      for (entry in groups[[s]]) {
+        parsed <- parser(entry$range_key)
+        if (!is.null(parsed)) {
+          lb <- if (parsed$inc_low) "[" else "("
+          rb <- if (parsed$inc_high) "]" else ")"
+          low_s <- .render_bound(parsed$low, "low")
+          high_s <- .render_bound(parsed$high, "high")
+          cat("    ", lb, low_s, ", ", high_s, rb,
+              " => ", entry$value, "\n", sep = "")
+        } else {
+          cat("    ", entry$range_key, " => ", entry$value, "\n", sep = "")
+        }
+      }
+      if (!is.null(x$missing_by_stratum) && s %in% names(x$missing_by_stratum)) {
+        cat("    .missing => ", x$missing_by_stratum[[s]], "\n", sep = "")
+      }
+      if (!is.null(x$other_by_stratum) && s %in% names(x$other_by_stratum)) {
+        cat("    .other => ", x$other_by_stratum[[s]], "\n", sep = "")
+      }
+    }
   } else {
+    is_vtype <- .is_value_type(x$type)
     cat("Mappings:\n")
 
     for (i in seq_along(x$mappings)) {
       key <- names(x$mappings)[i]
       value <- x$mappings[[i]]
 
+      # Format the value for display
+      value_str <- if (is_vtype) {
+        .typed_value_to_string(value, x$type, x$date_format)
+      } else {
+        as.character(value)
+      }
+
       # Try to display range keys in interval notation
-      parsed <- .parse_range_key(key)
+      parsed <- if (is_vtype && x$type %in% c("Date", "POSIXct")) {
+        .parse_date_range_key(key, x$date_format)
+      } else if (x$type == "date_range") {
+        .parse_date_range_key(key, x$date_format)
+      } else if (x$type == "datetime_range") {
+        .parse_datetime_range_key(key, x$date_format)
+      } else {
+        .parse_range_key(key)
+      }
       if (!is.null(parsed)) {
         left_bracket <- if (parsed$inc_low) "[" else "("
         right_bracket <- if (parsed$inc_high) "]" else ")"
-        low_str <- if (is.infinite(parsed$low) && parsed$low < 0) "LOW" else as.character(parsed$low)
-        high_str <- if (is.infinite(parsed$high) && parsed$high > 0) "HIGH" else as.character(parsed$high)
+        low_num  <- as.numeric(parsed$low)
+        high_num <- as.numeric(parsed$high)
+        low_str <- if (is.infinite(low_num) && low_num < 0) "LOW" else as.character(parsed$low)
+        high_str <- if (is.infinite(high_num) && high_num > 0) "HIGH" else as.character(parsed$high)
         cat("  ", left_bracket, low_str, ", ", high_str, right_bracket,
-            " => ", value, "\n", sep = "")
+            " => ", value_str, "\n", sep = "")
       } else {
-        cat("  ", key, " => ", value, "\n", sep = "")
+        cat("  ", key, " => ", value_str, "\n", sep = "")
       }
     }
   }

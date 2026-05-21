@@ -129,6 +129,7 @@ INVALUE race_inv
 ;
 ')
 
+flist()   # character vector of names
 fprint()
 
 ## ----export-------------------------------------------------------------------
@@ -578,6 +579,7 @@ csv_path <- system.file("extdata", "test_cntlout.csv", package = "ksformat")
 imported <- fimport(csv_path)
 names(imported)
 
+flist()
 fprint()
 
 ## ----cntlout-apply------------------------------------------------------------
@@ -632,6 +634,7 @@ fclear()
 manual <- fimport(csv_path, register = FALSE)
 
 # Library should be empty
+flist()
 fprint()
 
 # Use directly from returned list
@@ -659,6 +662,511 @@ fnew("M" = "Homme", "F" = "Femme",   .missing = "Inconnu", name = "sex_fr")
 lang <- "fr"
 fput(c("M", "F", NA), paste0("sex_", lang))
 # -> "Homme" "Femme" "Inconnu"
+
+fclear()
+
+## ----fputk-setup--------------------------------------------------------------
+# Simulate a Subject Visits (SV) domain
+SV <- data.frame(
+  USUBJID  = c("SUBJ-001", "SUBJ-001", "SUBJ-001", "SUBJ-002", "SUBJ-002"),
+  VISITNUM = c(1, 2, 3, 1, 2),
+  SVSTDTC  = c("2025-01-15", "2025-02-20", "2025-03-10",
+               "2025-01-18", "2025-02-25"),
+  stringsAsFactors = FALSE
+)
+
+# Simulate a Questionnaires (QS) domain
+QS <- data.frame(
+  USUBJID  = c("SUBJ-001", "SUBJ-001", "SUBJ-002", "SUBJ-002", "SUBJ-002"),
+  VISITNUM = c(1, 2, 1, 2, 3),
+  QSTESTCD = c("SCORE1", "SCORE1", "SCORE1", "SCORE1", "SCORE1"),
+  QSSTRESN = c(85, 90, 72, 78, NA),
+  stringsAsFactors = FALSE
+)
+
+SV
+QS
+
+## ----fputk-register-----------------------------------------------------------
+# Create composite key -> date string mapping from SV
+fnew(
+  fmap(paste(SV$USUBJID, SV$VISITNUM, sep = "|"), SV$SVSTDTC),
+  .other  = "NOT FOUND",
+  name    = "svdtc",
+  type    = "character",
+  ignore_case = TRUE
+)
+
+fprint("svdtc")
+
+## ----fputk-apply--------------------------------------------------------------
+QS$SVSTDTC <- fputk(QS$USUBJID, QS$VISITNUM, format = "svdtc")
+QS
+class(QS$SVSTDTC)  # character
+
+fclear()
+
+## ----fputk-date---------------------------------------------------------------
+# Create composite key -> Date mapping from SV
+fnew(
+  fmap(
+    paste(SV$USUBJID, SV$VISITNUM, sep = "|"),
+    as.Date(SV$SVSTDTC, format = "%Y-%m-%d")
+  ),
+  .other  = NA,
+  name    = "svdtn",
+  type    = "Date",
+  ignore_case = TRUE
+)
+
+fprint("svdtn")
+
+## ----fputk-date-apply---------------------------------------------------------
+QS$SVSTDTC_DT <- fputk(QS$USUBJID, QS$VISITNUM, format = "svdtn")
+QS
+class(QS$SVSTDTC_DT)  # Date
+
+# Typed NA for unmatched keys (SUBJ-002 Visit 3 not in SV)
+is.na(QS$SVSTDTC_DT[5])
+
+# Date arithmetic works directly
+QS$SVSTDTC_DT + 7  # add 7 days
+
+fclear()
+
+## ----fmap-setup---------------------------------------------------------------
+library(ksformat)
+
+dm <- data.frame(
+  USUBJID = c("SUBJ-001", "SUBJ-002", "SUBJ-003"),
+  SUBJID  = c("001", "002", "003"),
+  RFICDTC = c("2023-03-09T08:45", "2024-08-13T09:53", "2025-06-17T09:03"),
+  stringsAsFactors = FALSE
+)
+
+# Composite key for both formats
+keys <- paste(dm$USUBJID, dm$SUBJID, sep = "|")
+
+## ----fmap-date----------------------------------------------------------------
+# Date lookup
+fnew(
+  fmap(keys, as.Date(dm$RFICDTC, format = "%Y-%m-%d")),
+  .other      = NA,
+  type        = "Date",
+  ignore_case = TRUE,
+  name        = "icdtn"
+)
+
+# Character lookup — same fmap(keys, values) pattern!
+fnew(
+  fmap(keys, dm$RFICDTC),
+  .other      = "NOT FOUND",
+  type        = "character",
+  ignore_case = TRUE,
+  name        = "icdtc"
+)
+
+fprint("icdtn")
+fprint("icdtc")
+
+## ----fmap-apply---------------------------------------------------------------
+# Both return the expected results
+fputk("SUBJ-001", "001", format = "icdtn")
+class(fputk("SUBJ-001", "001", format = "icdtn"))
+
+fputk("SUBJ-001", "001", format = "icdtc")
+class(fputk("SUBJ-001", "001", format = "icdtc"))
+
+fclear()
+
+## ----fmap-default-------------------------------------------------------------
+# These are equivalent — both map "M" -> "Male"
+fmt_a <- fnew(c(Male = "M", Female = "F"))
+fmt_b <- fnew("M" = "Male", "F" = "Female")
+
+identical(fput(c("M", "F"), fmt_a), fput(c("M", "F"), fmt_b))
+
+fclear()
+
+## ----fparse-date-char---------------------------------------------------------
+fparse(text = '
+VALUE svdtc (character, nocase)
+  "SUBJ-001|1" = "2025-01-15"
+  "SUBJ-001|2" = "2025-02-20"
+  "SUBJ-001|3" = "2025-03-10"
+  "SUBJ-002|1" = "2025-01-18"
+  "SUBJ-002|2" = "2025-02-25"
+  .other       = "NOT FOUND"
+;
+')
+
+fprint("svdtc")
+
+## ----fparse-date-char-apply---------------------------------------------------
+QS <- data.frame(
+  USUBJID  = c("SUBJ-001", "SUBJ-001", "SUBJ-002", "SUBJ-002", "SUBJ-002"),
+  VISITNUM = c(1, 2, 1, 2, 3),
+  QSSTRESN = c(85, 90, 72, 78, NA),
+  stringsAsFactors = FALSE
+)
+
+QS$SVSTDTC <- fputk(QS$USUBJID, QS$VISITNUM, format = "svdtc")
+QS
+
+fclear()
+
+## ----fparse-date-native-------------------------------------------------------
+fparse(text = '
+VALUE svdtn (Date, format: %Y-%m-%d, nocase)
+  "SUBJ-001|1" = "2025-01-15"
+  "SUBJ-001|2" = "2025-02-20"
+  "SUBJ-001|3" = "2025-03-10"
+  "SUBJ-002|1" = "2025-01-18"
+  "SUBJ-002|2" = "2025-02-25"
+;
+')
+
+fprint("svdtn")
+
+## ----fparse-date-native-apply-------------------------------------------------
+QS$SVSTDTC_DT <- fputk(QS$USUBJID, QS$VISITNUM, format = "svdtn")
+QS
+
+class(QS$SVSTDTC_DT)         # Date
+is.na(QS$SVSTDTC_DT[5])      # TRUE — no match for SUBJ-002 Visit 3
+
+# Date arithmetic works directly
+QS$SVSTDTC_DT + 7
+
+## ----fparse-date-roundtrip----------------------------------------------------
+fmt_obj <- format_get("svdtn")
+txt <- fexport(svdtn = fmt_obj)
+cat(txt)
+
+## ----fparse-date-reimport-----------------------------------------------------
+# Re-parse the exported text
+fclear()
+fparse(text = txt)
+
+# Verify it still works
+fputk("SUBJ-001", 2, format = "svdtn")
+
+fclear()
+
+## ----franges-basic------------------------------------------------------------
+fparse(text = '
+VALUE age (numeric)
+  [0, 18)    = "Child"
+  [18, 65)   = "Adult"
+  [65, HIGH] = "Senior"
+  .missing   = "Unknown"
+;
+')
+
+franges("age")
+
+## ----franges-filter-----------------------------------------------------------
+df <- franges("age")
+
+# Which ranges have a finite upper bound?
+df[is.finite(df$high), ]
+
+## ----franges-discrete---------------------------------------------------------
+fnew("M" = "Male", "F" = "Female", .missing = "Unknown", name = "sex")
+franges("sex")   # 0 rows
+
+## ----franges-cleanup, include=FALSE-------------------------------------------
+fclear()
+
+## ----fmap-to-ranges-----------------------------------------------------------
+fparse(text = '
+VALUE visit_ther (numeric)
+  [LOW,  1] =  0
+  [ 8, 22] =  2
+  [22, 36] =  4
+  [37, 50] =  6
+  [51, 63] =  8
+  [64, 78] = 10
+  [79, 91] = 12
+;
+')
+
+coded_weeks <- c(0, 2, 4, 6, 8, 10, 12)
+fmap_to_ranges(coded_weeks, "visit_ther")
+
+## ----fmap-to-ranges-na--------------------------------------------------------
+fmap_to_ranges(c(2, 99, 4), "visit_ther")
+
+## ----fmap-to-ranges-cleanup, include=FALSE------------------------------------
+fclear()
+
+## ----date-range-basic---------------------------------------------------------
+fnew(
+  "2023-01-01,2024-01-01,TRUE,FALSE" = "FY23",
+  "2024-01-01,2025-01-01,TRUE,FALSE" = "FY24",
+  "2025-01-01,2026-01-01,TRUE,FALSE" = "FY25",
+  type = "date_range",
+  name = "fiscal_year"
+)
+
+dates <- as.Date(c("2023-06-15", "2024-03-01", "2024-12-31",
+                   "2025-07-04", "2022-01-01", NA))
+
+data.frame(
+  date  = dates,
+  fy    = fput(dates, "fiscal_year")
+)
+
+## ----date-range-fparse--------------------------------------------------------
+fparse(text = '
+VALUE quarter (date_range)
+  [2024-01-01, 2024-04-01) = "Q1-2024"
+  [2024-04-01, 2024-07-01) = "Q2-2024"
+  [2024-07-01, 2024-10-01) = "Q3-2024"
+  [2024-10-01, 2025-01-01) = "Q4-2024"
+  .other                   = "Outside 2024"
+;
+')
+
+sample_dates <- as.Date(c("2024-02-14", "2024-05-20", "2024-08-08",
+                          "2024-11-30", "2025-03-01"))
+
+data.frame(
+  date    = sample_dates,
+  quarter = fput(sample_dates, "quarter")
+)
+
+## ----date-range-low-high------------------------------------------------------
+fparse(text = '
+VALUE era (date_range)
+  [LOW,        2000-01-01) = "Pre-2000"
+  [2000-01-01, 2010-01-01) = "2000s"
+  [2010-01-01, 2020-01-01) = "2010s"
+  [2020-01-01, HIGH]       = "2020+"
+;
+')
+
+event_dates <- as.Date(c("1985-07-04", "2005-12-25",
+                         "2015-06-01", "2023-11-11"))
+
+data.frame(
+  date = event_dates,
+  era  = fput(event_dates, "era")
+)
+
+## ----date-range-export--------------------------------------------------------
+q_obj <- format_get("quarter")
+cat(fexport(quarter = q_obj))
+
+## ----date-range-roundtrip-----------------------------------------------------
+# Re-parse the exported text
+txt <- fexport(quarter = q_obj)
+fclear()
+fparse(text = txt)
+
+fput(as.Date(c("2024-02-14", "2024-08-08")), "quarter")
+
+## ----date-range-multilabel----------------------------------------------------
+fparse(text = '
+VALUE study_window (date_range, multilabel)
+  [2024-01-01, 2024-07-01) = "First Half"
+  [2024-04-01, 2024-10-01) = "Mid-Year"
+  [2024-07-01, 2025-01-01) = "Second Half"
+;
+')
+
+checkup_dates <- as.Date(c("2024-02-15", "2024-05-20", "2024-09-01"))
+all_windows   <- fput_all(checkup_dates, "study_window")
+
+for (i in seq_along(checkup_dates)) {
+  cat(format(checkup_dates[i]), "->",
+      paste(all_windows[[i]], collapse = " | "), "\n")
+}
+
+## ----date-range-autodetect----------------------------------------------------
+fparse(text = '
+VALUE auto_fy
+  [2024-01-01, 2025-01-01) = "2024"
+;
+
+VALUE auto_shift
+  [2024-01-15 08:00, 2024-01-15 16:00) = "Day shift"
+;
+')
+
+cat("auto_fy type   :", format_get("auto_fy")$type, "\n")
+cat("auto_shift type:", format_get("auto_shift")$type, "\n")
+
+## ----datetime-range-----------------------------------------------------------
+fparse(text = '
+VALUE shift (datetime_range)
+  [2024-01-15 00:00, 2024-01-15 08:00) = "Night"
+  [2024-01-15 08:00, 2024-01-15 16:00) = "Day"
+  [2024-01-15 16:00, 2024-01-16 00:00) = "Evening"
+;
+')
+
+timestamps <- as.POSIXct(
+  c("2024-01-15 03:22:00", "2024-01-15 11:45:00",
+    "2024-01-15 19:00:00"),
+  tz = "UTC"
+)
+
+data.frame(
+  ts    = format(timestamps, tz = "UTC"),
+  shift = fput(timestamps, "shift")
+)
+
+## ----date-range-cleanup, include=FALSE----------------------------------------
+fclear()
+
+## ----strat-num----------------------------------------------------------------
+visits <- fmap_strata(
+  stratum = c("ARM_A", "ARM_A", "ARM_A", "ARM_B", "ARM_B"),
+  low     = c(0,        7,       28,      0,       14),
+  high    = c(7,        28,      Inf,     14,      Inf),
+  label   = c("Baseline", "Wk1-3", "Wk4+", "Baseline", "Wk2+"),
+  inc_high = c(FALSE, FALSE, TRUE, FALSE, TRUE)
+)
+fnew(visits, type = "stratified_range",
+     ".other|ARM_A" = "A_outside",
+     .other = "outside_window",
+     name = "vw")
+
+df <- data.frame(
+  arm = c("ARM_A", "ARM_A", "ARM_B", "ARM_B", "ARM_C"),
+  day = c(3,        35,      5,       40,      10)
+)
+df$visit <- fputk(df$arm, df$day, format = "vw")
+df
+
+## ----strat-text---------------------------------------------------------------
+fparse(text = '
+VALUE vw_text (stratified_range, range_subtype: numeric)
+  "ARM_A"|[0, 7)    = "Baseline"
+  "ARM_A"|[7, 28)   = "Wk1-3"
+  "ARM_A"|[28, HIGH]= "Wk4+"
+  "ARM_B"|[0, 14)   = "Baseline"
+  "ARM_B"|[14, HIGH]= "Wk2+"
+  ".other|ARM_A"    = "A_outside"
+  .other            = "outside_window"
+  ;
+')
+fputk(df$arm, df$day, format = "vw_text")
+
+## ----strat-date---------------------------------------------------------------
+windows <- fmap_strata(
+  stratum = c("S001", "S001", "S002", "S002"),
+  low     = as.Date(c("2024-01-01", "2024-01-15",
+                       "2024-02-01", "2024-02-20")),
+  high    = as.Date(c("2024-01-15", "2024-02-01",
+                       "2024-02-20", "2024-03-10")),
+  label   = c("Screen", "Treat", "Screen", "Treat")
+)
+fnew(windows, type = "stratified_range", range_subtype = "date",
+     .other = "off-window", name = "win")
+
+subj   <- c("S001", "S001", "S002", "S002", "S003")
+visits <- as.Date(c("2024-01-05", "2024-01-20",
+                     "2024-02-10", "2024-03-01", "2024-01-01"))
+data.frame(
+  subj  = subj,
+  date  = visits,
+  phase = fputk(subj, visits, format = "win")
+)
+
+## ----strat-roundtrip----------------------------------------------------------
+txt <- fexport(format_get("vw"))
+cat(txt, "\n")
+fclear()
+fparse(text = txt)
+fputk(df$arm, df$day, format = "vw")
+
+## ----strat-cleanup, include=FALSE---------------------------------------------
+fclear()
+
+## ----fmap-ranges-num----------------------------------------------------------
+age_groups <- fmap_ranges(
+  low   = c(0, 18, 65),
+  high  = c(18, 65, Inf),
+  label = c("Child", "Adult", "Senior"),
+  inc_high = c(FALSE, FALSE, TRUE)
+)
+fnew(age_groups, type = "numeric", name = "ag")
+fput(c(5, 25, 90), "ag")
+fclear()
+
+## ----na-str-setup-------------------------------------------------------------
+# Source lab mapping (as received from a specification)
+lb_map <- data.frame(
+  LBCAT    = c("BLOOD CHEMISTRY", "COAGULOGRAM", "COAGULATION PANEL", "COAGULOGRAM"),
+  LBSPEC   = c("BLOOD",           "BLOOD",        "BLOOD",             "BLOOD"),
+  LBTESTCD = c("ALB",             "FIBRINO",      "INR",               "INR"),
+  LBSTRESU = c("g/L",             "g/L",           NA,                  NA),
+  PARAMCD  = c("ALB",             "FIBRINO",       "INR",               "INR"),
+  stringsAsFactors = FALSE
+)
+lb_map
+
+## ----na-str-build-------------------------------------------------------------
+with(lb_map,
+  fmap(paste(LBCAT, LBSPEC, LBTESTCD, LBSTRESU, sep = "|"), PARAMCD)
+) |>
+  fnew(ignore_case = TRUE, .other = NA,
+       type = "character", name = "lb_param")
+
+fprint("lb_param")
+
+## ----na-str-default-----------------------------------------------------------
+lb_map$PARAMCD_default <- with(lb_map,
+  fputk(LBCAT, LBSPEC, LBTESTCD, LBSTRESU, format = "lb_param")
+)
+lb_map[, c("LBTESTCD", "LBSTRESU", "PARAMCD", "PARAMCD_default")]
+
+## ----na-str-correct-----------------------------------------------------------
+lb_map$PARAMCD_back <- with(lb_map,
+  fputk(LBCAT, LBSPEC, LBTESTCD, LBSTRESU,
+        format = "lb_param", na_as_string = TRUE)
+)
+lb_map[, c("LBTESTCD", "LBSTRESU", "PARAMCD", "PARAMCD_back")]
+
+## ----na-str-cleanup, include=FALSE--------------------------------------------
+fclear()
+
+## ----finputk-basic------------------------------------------------------------
+# Build an INVALUE from two-column composite labels
+finput(
+  fmap(paste(c("BLOOD CHEMISTRY", "COAGULOGRAM", "COAGULATION PANEL"),
+             c("ALB",             "FIBRINO",      "INR"),
+             sep = "|"),
+       c(1L, 2L, 3L)),
+  target_type = "integer",
+  name = "lb_code_inv"
+)
+
+# Reverse lookup: two separate columns → integer code
+cat_vec  <- c("BLOOD CHEMISTRY", "COAGULOGRAM", "COAGULATION PANEL", "OTHER")
+test_vec <- c("ALB",              "FIBRINO",     "INR",               "X")
+
+finputk(cat_vec, test_vec, invalue_name = "lb_code_inv")
+# BLOOD CHEMISTRY|ALB → 1, COAGULOGRAM|FIBRINO → 2,
+# COAGULATION PANEL|INR → 3, OTHER|X → NA (no match → missing_value)
+fclear()
+
+## ----finputk-na---------------------------------------------------------------
+# INVALUE where LBSTRESU can be NA (like INR)
+finput(
+  fmap(
+    paste(lb_map$LBCAT, lb_map$LBTESTCD, lb_map$LBSTRESU, sep = "|"),
+    seq_len(nrow(lb_map))
+  ),
+  target_type = "integer",
+  name = "lb_row_inv"
+)
+
+# Reconstruct lb_map row indices — works even when LBSTRESU is NA
+finputk(lb_map$LBCAT, lb_map$LBTESTCD, lb_map$LBSTRESU,
+        invalue_name = "lb_row_inv", na_as_string = TRUE)
 
 fclear()
 

@@ -172,6 +172,7 @@ INVALUE race_inv
 ;
 ')
 
+flist()   # character vector of names
 fprint()
 ```
 
@@ -737,6 +738,7 @@ csv_path <- system.file("extdata", "test_cntlout.csv", package = "ksformat")
 imported <- fimport(csv_path)
 names(imported)
 
+flist()
 fprint()
 ```
 
@@ -803,6 +805,7 @@ fclear()
 manual <- fimport(csv_path, register = FALSE)
 
 # Library should be empty
+flist()
 fprint()
 
 # Use directly from returned list
@@ -838,3 +841,771 @@ fput(c("M", "F", NA), paste0("sex_", lang))
 
 fclear()
 ```
+
+## Example 20: Composite Key Lookup with `fputk()`
+
+`fputk()` pastes multiple vectors into a composite key before format lookup.
+This is useful when a format is keyed on the combination of several columns,
+a common pattern in clinical data (e.g., looking up a visit date by
+subject + visit number).
+
+```{r fputk-setup}
+# Simulate a Subject Visits (SV) domain
+SV <- data.frame(
+  USUBJID  = c("SUBJ-001", "SUBJ-001", "SUBJ-001", "SUBJ-002", "SUBJ-002"),
+  VISITNUM = c(1, 2, 3, 1, 2),
+  SVSTDTC  = c("2025-01-15", "2025-02-20", "2025-03-10",
+               "2025-01-18", "2025-02-25"),
+  stringsAsFactors = FALSE
+)
+
+# Simulate a Questionnaires (QS) domain
+QS <- data.frame(
+  USUBJID  = c("SUBJ-001", "SUBJ-001", "SUBJ-002", "SUBJ-002", "SUBJ-002"),
+  VISITNUM = c(1, 2, 1, 2, 3),
+  QSTESTCD = c("SCORE1", "SCORE1", "SCORE1", "SCORE1", "SCORE1"),
+  QSSTRESN = c(85, 90, 72, 78, NA),
+  stringsAsFactors = FALSE
+)
+
+SV
+QS
+```
+
+### Character lookup (returns character strings)
+
+Register a format keyed on `USUBJID|VISITNUM` with values being the visit
+start date (`SVSTDTC`) as character strings:
+
+```{r fputk-register}
+# Create composite key -> date string mapping from SV
+fnew(
+  fmap(paste(SV$USUBJID, SV$VISITNUM, sep = "|"), SV$SVSTDTC),
+  .other  = "NOT FOUND",
+  name    = "svdtc",
+  type    = "character",
+  ignore_case = TRUE
+)
+
+fprint("svdtc")
+```
+
+Now look up visit dates in the QS domain using `fputk()`:
+
+```{r fputk-apply}
+QS$SVSTDTC <- fputk(QS$USUBJID, QS$VISITNUM, format = "svdtc")
+QS
+class(QS$SVSTDTC)  # character
+
+fclear()
+```
+
+### Native Date lookup (returns Date objects)
+
+Using `type = "Date"`, values are stored as native R `Date` objects and
+`fput()`/`fputk()` return them directly — no string conversion needed:
+
+```{r fputk-date}
+# Create composite key -> Date mapping from SV
+fnew(
+  fmap(
+    paste(SV$USUBJID, SV$VISITNUM, sep = "|"),
+    as.Date(SV$SVSTDTC, format = "%Y-%m-%d")
+  ),
+  .other  = NA,
+  name    = "svdtn",
+  type    = "Date",
+  ignore_case = TRUE
+)
+
+fprint("svdtn")
+```
+
+```{r fputk-date-apply}
+QS$SVSTDTC_DT <- fputk(QS$USUBJID, QS$VISITNUM, format = "svdtn")
+QS
+class(QS$SVSTDTC_DT)  # Date
+
+# Typed NA for unmatched keys (SUBJ-002 Visit 3 not in SV)
+is.na(QS$SVSTDTC_DT[5])
+
+# Date arithmetic works directly
+QS$SVSTDTC_DT + 7  # add 7 days
+
+fclear()
+```
+
+## Example 21: Consistent Data-Driven Formats with `fmap()`
+
+When building formats from data (e.g., a data frame with 1000+ rows), you
+need a named vector mapping keys to values. By default, `fnew()` treats
+named vectors differently depending on the output type:
+
+- **Value types** (`Date`, `POSIXct`, `logical`): `c(key = value)` — natural
+  direction, no reversal.
+- **Character / numeric**: `c(Label = "Code")` — R convention, names and
+  values are **swapped** internally.
+
+This inconsistency is confusing for data-driven formats. The `fmap()` helper
+solves it: `fmap(keys, values)` works identically for **all** types.
+
+### Clinical-data example
+
+Suppose we have a demographics dataset and need two lookup formats from the
+same data — one returning Date objects, one returning character strings:
+
+```{r fmap-setup}
+library(ksformat)
+
+dm <- data.frame(
+  USUBJID = c("SUBJ-001", "SUBJ-002", "SUBJ-003"),
+  SUBJID  = c("001", "002", "003"),
+  RFICDTC = c("2023-03-09T08:45", "2024-08-13T09:53", "2025-06-17T09:03"),
+  stringsAsFactors = FALSE
+)
+
+# Composite key for both formats
+keys <- paste(dm$USUBJID, dm$SUBJID, sep = "|")
+```
+
+### Same `fmap(keys, values)` pattern for both types
+
+Both formats use the **identical** calling style — `fmap(keys, values)` where
+keys are input lookup values and values are output objects:
+
+```{r fmap-date}
+# Date lookup
+fnew(
+  fmap(keys, as.Date(dm$RFICDTC, format = "%Y-%m-%d")),
+  .other      = NA,
+  type        = "Date",
+  ignore_case = TRUE,
+  name        = "icdtn"
+)
+
+# Character lookup — same fmap(keys, values) pattern!
+fnew(
+  fmap(keys, dm$RFICDTC),
+  .other      = "NOT FOUND",
+  type        = "character",
+  ignore_case = TRUE,
+  name        = "icdtc"
+)
+
+fprint("icdtn")
+fprint("icdtc")
+```
+
+```{r fmap-apply}
+# Both return the expected results
+fputk("SUBJ-001", "001", format = "icdtn")
+class(fputk("SUBJ-001", "001", format = "icdtn"))
+
+fputk("SUBJ-001", "001", format = "icdtc")
+class(fputk("SUBJ-001", "001", format = "icdtc"))
+
+fclear()
+```
+
+No extra parameters needed — `fmap()` tells `fnew()` to use the natural
+direction for all types.
+
+### When to use the default (reversal on)
+
+The default auto-reversal preserves the standard R convention
+where `c(Label = "Code")` maps `Code -> Label`. This is natural for
+hand-written formats:
+
+```{r fmap-default}
+# These are equivalent — both map "M" -> "Male"
+fmt_a <- fnew(c(Male = "M", Female = "F"))
+fmt_b <- fnew("M" = "Male", "F" = "Female")
+
+identical(fput(c("M", "F"), fmt_a), fput(c("M", "F"), fmt_b))
+
+fclear()
+```
+
+### Summary
+
+| Use case | Style | Reversal |
+|:--------------------------|:--------------------------------------|:----------|
+| Data-driven (any type)    | `fmap(keys, values)`                  | Suppressed |
+| Hand-written (char/num)   | `c(Label = "Code")` or `"Code" = "Label"` | Auto (default) |
+| Value types (`Date`, etc.)| `fmap(keys, values)` or `setNames(values, keys)` | No reversal (default) |
+
+## Example 22: Date Lookup via `fparse()` and `fputk()`
+
+Examples 20–21 built composite-key formats programmatically with `fnew()` and
+`fmap()`. When the mapping is **small and known in advance** (e.g., a
+study-specific visit schedule), you can define the same lookup entirely in
+text with `fparse()`.
+
+### Character date lookup
+
+The simplest approach: store dates as character strings using a regular
+`character` format.
+
+```{r fparse-date-char}
+fparse(text = '
+VALUE svdtc (character, nocase)
+  "SUBJ-001|1" = "2025-01-15"
+  "SUBJ-001|2" = "2025-02-20"
+  "SUBJ-001|3" = "2025-03-10"
+  "SUBJ-002|1" = "2025-01-18"
+  "SUBJ-002|2" = "2025-02-25"
+  .other       = "NOT FOUND"
+;
+')
+
+fprint("svdtc")
+```
+
+Apply with `fputk()` to look up visit dates from a questionnaire domain:
+
+```{r fparse-date-char-apply}
+QS <- data.frame(
+  USUBJID  = c("SUBJ-001", "SUBJ-001", "SUBJ-002", "SUBJ-002", "SUBJ-002"),
+  VISITNUM = c(1, 2, 1, 2, 3),
+  QSSTRESN = c(85, 90, 72, 78, NA),
+  stringsAsFactors = FALSE
+)
+
+QS$SVSTDTC <- fputk(QS$USUBJID, QS$VISITNUM, format = "svdtc")
+QS
+
+fclear()
+```
+
+### Native Date lookup
+
+Use the `Date` value type with `format:` to store dates as native R `Date`
+objects. The `format:` parameter tells `fparse()` how to parse the date
+strings in the text block:
+
+```{r fparse-date-native}
+fparse(text = '
+VALUE svdtn (Date, format: %Y-%m-%d, nocase)
+  "SUBJ-001|1" = "2025-01-15"
+  "SUBJ-001|2" = "2025-02-20"
+  "SUBJ-001|3" = "2025-03-10"
+  "SUBJ-002|1" = "2025-01-18"
+  "SUBJ-002|2" = "2025-02-25"
+;
+')
+
+fprint("svdtn")
+```
+
+Now `fputk()` returns real `Date` objects — arithmetic and comparison work
+directly:
+
+```{r fparse-date-native-apply}
+QS$SVSTDTC_DT <- fputk(QS$USUBJID, QS$VISITNUM, format = "svdtn")
+QS
+
+class(QS$SVSTDTC_DT)         # Date
+is.na(QS$SVSTDTC_DT[5])      # TRUE — no match for SUBJ-002 Visit 3
+
+# Date arithmetic works directly
+QS$SVSTDTC_DT + 7
+```
+
+### Round-trip: export and re-import
+
+Formats created with `fparse()` can be exported back to text with `fexport()`
+and re-parsed — useful for version-controlled format definitions:
+
+```{r fparse-date-roundtrip}
+fmt_obj <- format_get("svdtn")
+txt <- fexport(svdtn = fmt_obj)
+cat(txt)
+```
+
+```{r fparse-date-reimport}
+# Re-parse the exported text
+fclear()
+fparse(text = txt)
+
+# Verify it still works
+fputk("SUBJ-001", 2, format = "svdtn")
+
+fclear()
+```
+
+## Example 23: Inspecting Range Rules with `franges()`
+
+`franges()` extracts all range-based mappings from a format and returns them
+as a tidy `data.frame` — useful for auditing, documentation, or downstream
+processing.
+
+```{r franges-basic}
+fparse(text = '
+VALUE age (numeric)
+  [0, 18)    = "Child"
+  [18, 65)   = "Adult"
+  [65, HIGH] = "Senior"
+  .missing   = "Unknown"
+;
+')
+
+franges("age")
+```
+
+You can use the result like any data frame — filter, display, or feed into
+further calculations:
+
+```{r franges-filter}
+df <- franges("age")
+
+# Which ranges have a finite upper bound?
+df[is.finite(df$high), ]
+```
+
+`franges()` silently excludes discrete entries (`.missing`, `.other`, plain
+string keys) — only range rows appear. It returns an empty `data.frame` with
+the same columns when the format contains no ranges.
+
+```{r franges-discrete}
+fnew("M" = "Male", "F" = "Female", .missing = "Unknown", name = "sex")
+franges("sex")   # 0 rows
+```
+
+```{r franges-cleanup, include=FALSE}
+fclear()
+```
+
+## Example 24: Reverse Range Lookup with `fmap_to_ranges()`
+
+When a range format stores **numeric codes** as its labels (e.g. visit
+windows coded as weeks), `fmap_to_ranges()` turns a vector of those codes
+back into the original `[low, high]` bounds — one row per input value.
+
+```{r fmap-to-ranges}
+fparse(text = '
+VALUE visit_ther (numeric)
+  [LOW,  1] =  0
+  [ 8, 22] =  2
+  [22, 36] =  4
+  [37, 50] =  6
+  [51, 63] =  8
+  [64, 78] = 10
+  [79, 91] = 12
+;
+')
+
+coded_weeks <- c(0, 2, 4, 6, 8, 10, 12)
+fmap_to_ranges(coded_weeks, "visit_ther")
+```
+
+Unmatched values produce `NA` rows, making it safe to pass arbitrary vectors:
+
+```{r fmap-to-ranges-na}
+fmap_to_ranges(c(2, 99, 4), "visit_ther")
+```
+
+```{r fmap-to-ranges-cleanup, include=FALSE}
+fclear()
+```
+
+## Example 25: Date Range Bucketing
+
+`date_range` and `datetime_range` formats bucket `Date` or `POSIXct` input
+into character labels using ISO date/datetime interval bounds.
+They reuse the same range-table engine as numeric ranges, so the
+`findInterval()` fast path is active for sorted, disjoint buckets.
+
+### Fiscal-year bucketing
+
+```{r date-range-basic}
+fnew(
+  "2023-01-01,2024-01-01,TRUE,FALSE" = "FY23",
+  "2024-01-01,2025-01-01,TRUE,FALSE" = "FY24",
+  "2025-01-01,2026-01-01,TRUE,FALSE" = "FY25",
+  type = "date_range",
+  name = "fiscal_year"
+)
+
+dates <- as.Date(c("2023-06-15", "2024-03-01", "2024-12-31",
+                   "2025-07-04", "2022-01-01", NA))
+
+data.frame(
+  date  = dates,
+  fy    = fput(dates, "fiscal_year")
+)
+```
+
+### Define from text with `fparse()`
+
+```{r date-range-fparse}
+fparse(text = '
+VALUE quarter (date_range)
+  [2024-01-01, 2024-04-01) = "Q1-2024"
+  [2024-04-01, 2024-07-01) = "Q2-2024"
+  [2024-07-01, 2024-10-01) = "Q3-2024"
+  [2024-10-01, 2025-01-01) = "Q4-2024"
+  .other                   = "Outside 2024"
+;
+')
+
+sample_dates <- as.Date(c("2024-02-14", "2024-05-20", "2024-08-08",
+                          "2024-11-30", "2025-03-01"))
+
+data.frame(
+  date    = sample_dates,
+  quarter = fput(sample_dates, "quarter")
+)
+```
+
+### `LOW` / `HIGH` open-ended bounds
+
+`LOW` and `HIGH` represent $-\infty$ and $+\infty$ — any date before or
+after a cutpoint falls in the open arm.
+
+```{r date-range-low-high}
+fparse(text = '
+VALUE era (date_range)
+  [LOW,        2000-01-01) = "Pre-2000"
+  [2000-01-01, 2010-01-01) = "2000s"
+  [2010-01-01, 2020-01-01) = "2010s"
+  [2020-01-01, HIGH]       = "2020+"
+;
+')
+
+event_dates <- as.Date(c("1985-07-04", "2005-12-25",
+                         "2015-06-01", "2023-11-11"))
+
+data.frame(
+  date = event_dates,
+  era  = fput(event_dates, "era")
+)
+```
+
+### Export and roundtrip
+
+Formats export with ISO date bounds and re-parse without loss:
+
+```{r date-range-export}
+q_obj <- format_get("quarter")
+cat(fexport(quarter = q_obj))
+```
+
+```{r date-range-roundtrip}
+# Re-parse the exported text
+txt <- fexport(quarter = q_obj)
+fclear()
+fparse(text = txt)
+
+fput(as.Date(c("2024-02-14", "2024-08-08")), "quarter")
+```
+
+### Overlapping buckets with `multilabel` and `fput_all()`
+
+```{r date-range-multilabel}
+fparse(text = '
+VALUE study_window (date_range, multilabel)
+  [2024-01-01, 2024-07-01) = "First Half"
+  [2024-04-01, 2024-10-01) = "Mid-Year"
+  [2024-07-01, 2025-01-01) = "Second Half"
+;
+')
+
+checkup_dates <- as.Date(c("2024-02-15", "2024-05-20", "2024-09-01"))
+all_windows   <- fput_all(checkup_dates, "study_window")
+
+for (i in seq_along(checkup_dates)) {
+  cat(format(checkup_dates[i]), "->",
+      paste(all_windows[[i]], collapse = " | "), "\n")
+}
+```
+
+### Auto-detection of type
+
+When no explicit type is given, `fparse()` infers `date_range` from ISO date
+bounds and `datetime_range` when bounds include a time component:
+
+```{r date-range-autodetect}
+fparse(text = '
+VALUE auto_fy
+  [2024-01-01, 2025-01-01) = "2024"
+;
+
+VALUE auto_shift
+  [2024-01-15 08:00, 2024-01-15 16:00) = "Day shift"
+;
+')
+
+cat("auto_fy type   :", format_get("auto_fy")$type, "\n")
+cat("auto_shift type:", format_get("auto_shift")$type, "\n")
+```
+
+### Datetime range bucketing
+
+`datetime_range` works identically to `date_range` but matches against
+POSIXct values. Bounds are expressed as `YYYY-MM-DD HH:MM[:SS]` strings.
+
+```{r datetime-range}
+fparse(text = '
+VALUE shift (datetime_range)
+  [2024-01-15 00:00, 2024-01-15 08:00) = "Night"
+  [2024-01-15 08:00, 2024-01-15 16:00) = "Day"
+  [2024-01-15 16:00, 2024-01-16 00:00) = "Evening"
+;
+')
+
+timestamps <- as.POSIXct(
+  c("2024-01-15 03:22:00", "2024-01-15 11:45:00",
+    "2024-01-15 19:00:00"),
+  tz = "UTC"
+)
+
+data.frame(
+  ts    = format(timestamps, tz = "UTC"),
+  shift = fput(timestamps, "shift")
+)
+```
+
+```{r date-range-cleanup, include=FALSE}
+fclear()
+```
+
+## Example 26: Stratified Range Lookup with `fputk()`
+
+The `stratified_range` type combines a discrete stratum (such as a study arm,
+subject id, or any composite key) with a numeric / Date / POSIXct range. Each
+stratum has its own bucket boundaries, and `fputk()` dispatches to the right
+bucket for each row.
+
+### Programmatic construction with `fmap_strata()`
+
+```{r strat-num}
+visits <- fmap_strata(
+  stratum = c("ARM_A", "ARM_A", "ARM_A", "ARM_B", "ARM_B"),
+  low     = c(0,        7,       28,      0,       14),
+  high    = c(7,        28,      Inf,     14,      Inf),
+  label   = c("Baseline", "Wk1-3", "Wk4+", "Baseline", "Wk2+"),
+  inc_high = c(FALSE, FALSE, TRUE, FALSE, TRUE)
+)
+fnew(visits, type = "stratified_range",
+     ".other|ARM_A" = "A_outside",
+     .other = "outside_window",
+     name = "vw")
+
+df <- data.frame(
+  arm = c("ARM_A", "ARM_A", "ARM_B", "ARM_B", "ARM_C"),
+  day = c(3,        35,      5,       40,      10)
+)
+df$visit <- fputk(df$arm, df$day, format = "vw")
+df
+```
+
+### Text definition with `fparse()`
+
+```{r strat-text}
+fparse(text = '
+VALUE vw_text (stratified_range, range_subtype: numeric)
+  "ARM_A"|[0, 7)    = "Baseline"
+  "ARM_A"|[7, 28)   = "Wk1-3"
+  "ARM_A"|[28, HIGH]= "Wk4+"
+  "ARM_B"|[0, 14)   = "Baseline"
+  "ARM_B"|[14, HIGH]= "Wk2+"
+  ".other|ARM_A"    = "A_outside"
+  .other            = "outside_window"
+  ;
+')
+fputk(df$arm, df$day, format = "vw_text")
+```
+
+### Date subtype: per-subject windows
+
+```{r strat-date}
+windows <- fmap_strata(
+  stratum = c("S001", "S001", "S002", "S002"),
+  low     = as.Date(c("2024-01-01", "2024-01-15",
+                       "2024-02-01", "2024-02-20")),
+  high    = as.Date(c("2024-01-15", "2024-02-01",
+                       "2024-02-20", "2024-03-10")),
+  label   = c("Screen", "Treat", "Screen", "Treat")
+)
+fnew(windows, type = "stratified_range", range_subtype = "date",
+     .other = "off-window", name = "win")
+
+subj   <- c("S001", "S001", "S002", "S002", "S003")
+visits <- as.Date(c("2024-01-05", "2024-01-20",
+                     "2024-02-10", "2024-03-01", "2024-01-01"))
+data.frame(
+  subj  = subj,
+  date  = visits,
+  phase = fputk(subj, visits, format = "win")
+)
+```
+
+### Roundtrip via `fexport()` / `fparse()`
+
+```{r strat-roundtrip}
+txt <- fexport(format_get("vw"))
+cat(txt, "\n")
+fclear()
+fparse(text = txt)
+fputk(df$arm, df$day, format = "vw")
+```
+
+```{r strat-cleanup, include=FALSE}
+fclear()
+```
+
+## Example 27: Plain Range Lookup with `fmap_ranges()`
+
+For non-stratified numeric / Date ranges, `fmap_ranges()` saves you from
+hand-crafting canonical \code{"low,high,inc_low,inc_high"} keys.
+
+```{r fmap-ranges-num}
+age_groups <- fmap_ranges(
+  low   = c(0, 18, 65),
+  high  = c(18, 65, Inf),
+  label = c("Child", "Adult", "Senior"),
+  inc_high = c(FALSE, FALSE, TRUE)
+)
+fnew(age_groups, type = "numeric", name = "ag")
+fput(c(5, 25, 90), "ag")
+fclear()
+```
+
+## Example 28: Composite Key Lookup with NA Components (`na_as_string`)
+
+When building a format from data using `fmap(paste(..., sep = "|"), values)`,
+base R's `paste()` converts any `NA` component to the **literal string**
+`"NA"`. The resulting composite key is therefore `"CAT|TEST|NA"`, not a
+missing value.
+
+By default, `fputk()` restores `NA_character_` wherever any component is
+`NA` before the lookup — so the key `"CAT|TEST|NA"` is never reached and
+the row falls through to `.other` / `.missing`.
+
+Setting `na_as_string = TRUE` keeps `paste()`'s literal `"NA"`, making the
+round-trip consistent.
+
+### Clinical example — LB parameter derivation
+
+A common ADaM task: derive `PARAMCD` from a combination of
+`LBCAT`, `LBSPEC`, `LBTESTCD`, and `LBSTRESU`, where some rows have
+`LBSTRESU = NA` (dimensionless tests such as INR).
+
+```{r na-str-setup}
+# Source lab mapping (as received from a specification)
+lb_map <- data.frame(
+  LBCAT    = c("BLOOD CHEMISTRY", "COAGULOGRAM", "COAGULATION PANEL", "COAGULOGRAM"),
+  LBSPEC   = c("BLOOD",           "BLOOD",        "BLOOD",             "BLOOD"),
+  LBTESTCD = c("ALB",             "FIBRINO",      "INR",               "INR"),
+  LBSTRESU = c("g/L",             "g/L",           NA,                  NA),
+  PARAMCD  = c("ALB",             "FIBRINO",       "INR",               "INR"),
+  stringsAsFactors = FALSE
+)
+lb_map
+```
+
+Build the format with `fmap(paste(...), PARAMCD)`.  
+`paste()` converts `NA` in `LBSTRESU` to `"NA"`, so the stored keys for
+INR rows are `"COAGULATION PANEL|BLOOD|INR|NA"` and `"COAGULOGRAM|BLOOD|INR|NA"`.
+
+```{r na-str-build}
+with(lb_map,
+  fmap(paste(LBCAT, LBSPEC, LBTESTCD, LBSTRESU, sep = "|"), PARAMCD)
+) |>
+  fnew(ignore_case = TRUE, .other = NA,
+       type = "character", name = "lb_param")
+
+fprint("lb_param")
+```
+
+Now apply the format.  
+With the default `na_as_string = FALSE`, the INR rows get `NA` (no match):
+
+```{r na-str-default}
+lb_map$PARAMCD_default <- with(lb_map,
+  fputk(LBCAT, LBSPEC, LBTESTCD, LBSTRESU, format = "lb_param")
+)
+lb_map[, c("LBTESTCD", "LBSTRESU", "PARAMCD", "PARAMCD_default")]
+```
+
+With `na_as_string = TRUE`, `paste()` also converts the lookup-side `NA` to
+`"NA"`, so the keys match:
+
+```{r na-str-correct}
+lb_map$PARAMCD_back <- with(lb_map,
+  fputk(LBCAT, LBSPEC, LBTESTCD, LBSTRESU,
+        format = "lb_param", na_as_string = TRUE)
+)
+lb_map[, c("LBTESTCD", "LBSTRESU", "PARAMCD", "PARAMCD_back")]
+```
+
+```{r na-str-cleanup, include=FALSE}
+fclear()
+```
+
+### The rule of thumb
+
+> Use `na_as_string = TRUE` whenever the format was built with  
+> `fmap(paste(...), values)` **and** any key column can contain `NA`.
+
+If the format keys were set by hand
+(`fnew("CAT|TEST|g/L" = "ALB", ...)`), `NA` components should still go
+through `.missing` — keep the default `na_as_string = FALSE`.
+
+## Example 29: Composite Label Invalue Lookup with `finputk()`
+
+`finputk()` is the invalue-side mirror of `fputk()`: it pastes multiple
+columns into a composite label and reverse-looks it up in a `ks_invalue`
+format. The same `na_as_string` argument applies.
+
+### Basic usage
+
+```{r finputk-basic}
+# Build an INVALUE from two-column composite labels
+finput(
+  fmap(paste(c("BLOOD CHEMISTRY", "COAGULOGRAM", "COAGULATION PANEL"),
+             c("ALB",             "FIBRINO",      "INR"),
+             sep = "|"),
+       c(1L, 2L, 3L)),
+  target_type = "integer",
+  name = "lb_code_inv"
+)
+
+# Reverse lookup: two separate columns → integer code
+cat_vec  <- c("BLOOD CHEMISTRY", "COAGULOGRAM", "COAGULATION PANEL", "OTHER")
+test_vec <- c("ALB",              "FIBRINO",     "INR",               "X")
+
+finputk(cat_vec, test_vec, invalue_name = "lb_code_inv")
+# BLOOD CHEMISTRY|ALB → 1, COAGULOGRAM|FIBRINO → 2,
+# COAGULATION PANEL|INR → 3, OTHER|X → NA (no match → missing_value)
+fclear()
+```
+
+### With NA components (`na_as_string = TRUE`)
+
+When the INVALUE was built from data containing `NA` columns, use
+`na_as_string = TRUE` on both the build side (`fmap(paste(...), ...)`) and
+the lookup side (`finputk(..., na_as_string = TRUE)`).
+
+```{r finputk-na}
+# INVALUE where LBSTRESU can be NA (like INR)
+finput(
+  fmap(
+    paste(lb_map$LBCAT, lb_map$LBTESTCD, lb_map$LBSTRESU, sep = "|"),
+    seq_len(nrow(lb_map))
+  ),
+  target_type = "integer",
+  name = "lb_row_inv"
+)
+
+# Reconstruct lb_map row indices — works even when LBSTRESU is NA
+finputk(lb_map$LBCAT, lb_map$LBTESTCD, lb_map$LBSTRESU,
+        invalue_name = "lb_row_inv", na_as_string = TRUE)
+
+fclear()
+```
+
+The output type is always determined by the stored invalue's `target_type`
+(here `integer`). For character output create the invalue with
+`target_type = "character"` and `finputk()` returns a character vector.
+

@@ -44,6 +44,7 @@ formatting, and proper handling of missing values (NA, NULL, NaN).
   \item \code{\link{format_get}} — retrieve a format from the global library
   \item \code{\link{fprint}} — list or display registered formats
   \item \code{\link{fclear}} — remove one or all formats from the library
+  \item \code{\link{format_library_app}} — open interactive library browser (Shiny)
   \item \code{\link{fexport}} — export formats to 'SAS'-like text
 }
 
@@ -108,6 +109,7 @@ fputn(Sys.Date(), "DATE9.")
 
 # Export and library management
 cat(fexport(sex = format_get("sex")))
+flist()           # character vector of registered names
 fprint()
 fclear()
 
@@ -120,6 +122,7 @@ Source repository and issue tracker: \url{https://github.com/crow16384/ksformat}
 
 Authors:
 \itemize{
+  \item Vladimir Larchenko \email{vladimir.larchenko@keystatsolutions.com}
   \item Igor Aleschenkov \email{igor.aleschenkov@keystatsolutions.com}
 }
 
